@@ -15,8 +15,18 @@ async def whatsauto(request: Request):
     if not message:
         return JSONResponse({"reply": ""})
 
-    # Case-insensitive contains match on Column A
-    matches = df[df.iloc[:, 0].str.contains(message, case=False, na=False)]
+    message_lower = message.lower()
+
+    # Bidirectional matching:
+    # 1) Column A contains message
+    # 2) Message contains Column A
+    matches = df[
+        df.iloc[:, 0].str.lower().str.contains(message_lower, na=False)
+        |
+        df.iloc[:, 0].apply(
+            lambda x: isinstance(x, str) and x.lower() in message_lower
+        )
+    ]
 
     if not matches.empty:
         reply_text = matches.iloc[0, 1]
