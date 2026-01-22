@@ -12,14 +12,16 @@ async def whatsauto(request: Request):
     form = await request.form()
     message = form.get("message", "").strip()
 
-    if message == "1006828":
-        row = df[df.iloc[:, 0].str.contains("1006828", na=False)]
-        if not row.empty:
-            reply_text = row.iloc[0, 1]
-        else:
-            reply_text = "Reference 1006828 not found in Excel"
+    if not message:
+        return JSONResponse({"reply": ""})
+
+    # Case-insensitive contains match on Column A
+    matches = df[df.iloc[:, 0].str.contains(message, case=False, na=False)]
+
+    if not matches.empty:
+        reply_text = matches.iloc[0, 1]
     else:
-        reply_text = "Send 1006828 to test Excel output"
+        reply_text = ""
 
     return JSONResponse({
         "reply": reply_text
