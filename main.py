@@ -13,7 +13,7 @@ async def whatsauto(request: Request):
     message = form.get("message", "").strip()
 
     if message == "1006828":
-        row = df[df.iloc[:, 0] == "1006828"]
+        row = df[df.iloc[:, 0].str.contains("1006828", na=False)]
         if not row.empty:
             reply_text = row.iloc[0, 1]
         else:
