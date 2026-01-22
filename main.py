@@ -8,51 +8,59 @@ from openai import OpenAI
 app = FastAPI()
 
 # ===============================
-# LOAD EXCEL (NAVIGATION ENGINE)
+# LOAD EXCEL
 # ===============================
 df = pd.read_excel("Autoreplies_app.xlsx", dtype=str)
 df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
 
 # ===============================
-# OPENAI CLIENT (INTERPRETER ONLY)
+# OPENAI CLIENT
 # ===============================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def detect_intent(message: str) -> str:
-    """
-    Detect ONLY high-level intent.
-    Returns: compare | explain | how_it_works | none
-    """
+# ===============================
+# IN-MEMORY CONTEXT (PER SENDER)
+# ===============================
+user_context = {}  # phone -> context dict
+
+def detect_intent_and_slots(message: str) -> dict:
     prompt = f"""
-Classify the user's message into ONE of the following intents:
+Extract intent and slots from the message.
+
+Intent:
 - compare
-- explain
-- how_it_works
 - none
 
-Return ONLY the intent word, nothing else.
+Slots:
+- buildings (list)
+- bedroom (string or null)
 
-User message:
+Return STRICT JSON:
+{{
+  "intent": "...",
+  "buildings": [],
+  "bedroom": null
+}}
+
+Message:
 "{message}"
 """
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": "Return only one word."},
+            {"role": "system", "content": "Return JSON only."},
             {"role": "user", "content": prompt}
         ],
         temperature=0
     )
-    return response.choices[0].message.content.strip().lower()
+    return json.loads(response.choices[0].message.content)
 
 
-# ===============================
-# WHATSAPP ENDPOINT
-# ===============================
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
     message = form.get("message", "").strip()
+    phone = form.get("phone", "unknown")
 
     if not message:
         return Response(
@@ -60,42 +68,61 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
+    # Load or init context
+    ctx = user_context.get(phone, {
+        "mode": None,
+        "buildings": [],
+        "bedroom": None
+    })
+
     # ===============================
-    # STEP 2.1 — INTENT INTERCEPTOR
+    # AI PARSE
     # ===============================
     try:
-        intent = detect_intent(message)
-        print("AI INTENT:", intent)
-    except Exception as e:
-        print("AI ERROR:", e)
-        intent = "none"
+        parsed = detect_intent_and_slots(message)
+    except Exception:
+        parsed = {"intent": "none", "buildings": [], "bedroom": None}
 
-    # ---- INTERCEPT ADVANCED INTENTS ----
-    if intent == "compare":
+    # ===============================
+    # START / CONTINUE COMPARE FLOW
+    # ===============================
+    if parsed["intent"] == "compare" or ctx["mode"] == "compare":
+        ctx["mode"] = "compare"
+
+        # Fill slots if provided
+        if parsed["buildings"]:
+            ctx["buildings"] = parsed["buildings"]
+        if parsed["bedroom"]:
+            ctx["bedroom"] = parsed["bedroom"]
+
+        user_context[phone] = ctx
+
+        # Ask for missing info
+        if len(ctx["buildings"]) < 2:
+            return Response(
+                json.dumps({
+                    "reply": "Please specify the two buildings you want to compare."
+                }, ensure_ascii=False),
+                media_type="application/json; charset=utf-8"
+            )
+
+        if not ctx["bedroom"]:
+            return Response(
+                json.dumps({
+                    "reply": "Please specify the bedroom type (e.g. 1BR, 2BR, or overall)."
+                }, ensure_ascii=False),
+                media_type="application/json; charset=utf-8"
+            )
+
+        # All required info collected (STOP HERE FOR NOW)
         reply_text = (
-            "I can help compare buildings.\n"
-            "Please specify the bedroom type (e.g. 1BR, 2BR, or overall)."
-        )
-        return Response(
-            json.dumps({"reply": reply_text}, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
+            f"Got it.\n"
+            f"Comparison request:\n"
+            f"- Buildings: {ctx['buildings'][0]} vs {ctx['buildings'][1]}\n"
+            f"- Bedroom: {ctx['bedroom']}\n\n"
+            f"Comparison logic will be applied next."
         )
 
-    if intent == "explain":
-        reply_text = (
-            "I can explain reports, ROI, or how to read the data.\n"
-            "Please tell me what you’d like explained."
-        )
-        return Response(
-            json.dumps({"reply": reply_text}, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
-        )
-
-    if intent == "how_it_works":
-        reply_text = (
-            "This system uses reference numbers to navigate.\n"
-            "Copy and paste any reference number to continue."
-        )
         return Response(
             json.dumps({"reply": reply_text}, ensure_ascii=False),
             media_type="application/json; charset=utf-8"
@@ -106,14 +133,11 @@ async def whatsauto(request: Request):
     # ===============================
     message_clean = message.lower()
 
-    exact_match = df[df.iloc[:, 0].str.lower() == message_clean]
-
-    if len(exact_match) == 1:
-        reply_text = exact_match.iloc[0, 1]
+    exact = df[df.iloc[:, 0].str.lower() == message_clean]
+    if len(exact) == 1:
+        reply_text = exact.iloc[0, 1]
     else:
-        fallback = df[
-            df.iloc[:, 0].str.lower().str.contains(message_clean, na=False)
-        ]
+        fallback = df[df.iloc[:, 0].str.lower().str.contains(message_clean, na=False)]
         reply_text = fallback.iloc[0, 1] if not fallback.empty else ""
 
     return Response(
