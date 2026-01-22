@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import os
 from openai import OpenAI
+import re
 
 app = FastAPI()
 
@@ -19,7 +20,7 @@ df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===============================
-# IN-MEMORY CONTEXT (PER PHONE)
+# IN-MEMORY CONTEXT
 # ===============================
 user_context = {}
 
@@ -57,12 +58,8 @@ Message:
 
 
 def find_report(building: str, bedroom: str) -> str:
-    """
-    Finds SALES report for a given building + bedroom
-    by parsing WhatsApp-style building profile menu.
-    """
     building = building.lower().strip()
-    bedroom_num = bedroom.lower().replace(" bedroom", "").replace("br", "").strip()
+    bedroom_num = re.sub(r"[^\d]", "", bedroom)
 
     # 1) Find building profile
     profile = df[df.iloc[:, 0].str.lower() == building]
@@ -70,29 +67,29 @@ def find_report(building: str, bedroom: str) -> str:
         return ""
 
     text = profile.iloc[0, 1]
-    lines = [l.strip() for l in text.splitlines()]
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-    in_bedroom_block = False
+    in_block = False
 
     for line in lines:
         l = line.lower()
 
-        # Detect bedroom header like "*3 B/R*"
-        if (bedroom_num in l) and ("b/r" in l or "br" in l):
-            in_bedroom_block = True
+        # Enter correct bedroom block
+        if re.search(rf"\*{bedroom_num}\s*b/r\*", l):
+            in_block = True
             continue
 
-        # Inside correct bedroom block → look for Sales
-        if in_bedroom_block:
-            if "sales" in l:
-                for token in line.split():
-                    if token.isdigit() and len(token) == 7:
-                        report = df[df.iloc[:, 0] == token]
-                        if not report.empty:
-                            return report.iloc[0, 1]
-            # Stop if next bedroom block starts
-            if "b/r" in l or "br" in l:
-                break
+        # Exit when next bedroom header appears
+        if in_block and re.search(r"\*\d+\s*b/r\*", l):
+            break
+
+        # Inside block → find Sales reference
+        if in_block and "sales" in l:
+            for token in line.split():
+                if token.isdigit() and len(token) == 7:
+                    report = df[df.iloc[:, 0] == token]
+                    if not report.empty:
+                        return report.iloc[0, 1]
 
     return ""
 
@@ -109,16 +106,12 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
-    # Load or init context
     ctx = user_context.get(phone, {
         "mode": None,
         "buildings": [],
         "bedroom": None
     })
 
-    # ===============================
-    # AI PARSE (INTERPRETER ONLY)
-    # ===============================
     try:
         parsed = detect_intent_and_slots(message)
     except Exception:
@@ -152,7 +145,7 @@ async def whatsauto(request: Request):
             )
 
         # ===============================
-        # STEP 2.3 — EXECUTE COMPARISON
+        # STEP 2.3 — EXECUTE
         # ===============================
         b1, b2 = ctx["buildings"][:2]
         bedroom = ctx["bedroom"]
@@ -160,18 +153,13 @@ async def whatsauto(request: Request):
         r1 = find_report(b1, bedroom)
         r2 = find_report(b2, bedroom)
 
-        intro = (
+        reply_text = (
             f"Below is a side-by-side view for *{bedroom}* apartments.\n"
             f"Data is shown as reported, without modification.\n\n"
-        )
-
-        reply_text = (
-            intro +
             f"*{b1.upper()}*\n{r1}\n\n"
             f"*{b2.upper()}*\n{r2}"
         )
 
-        # Clear context
         user_context.pop(phone, None)
 
         return Response(
@@ -182,13 +170,13 @@ async def whatsauto(request: Request):
     # ===============================
     # DEFAULT — EXCEL NAVIGATION
     # ===============================
-    message_clean = message.lower()
+    msg = message.lower()
 
-    exact = df[df.iloc[:, 0].str.lower() == message_clean]
+    exact = df[df.iloc[:, 0].str.lower() == msg]
     if len(exact) == 1:
         reply_text = exact.iloc[0, 1]
     else:
-        fallback = df[df.iloc[:, 0].str.lower().str.contains(message_clean, na=False)]
+        fallback = df[df.iloc[:, 0].str.lower().str.contains(msg, na=False)]
         reply_text = fallback.iloc[0, 1] if not fallback.empty else ""
 
     return Response(
