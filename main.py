@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse
 import pandas as pd
 import re
 
@@ -14,7 +14,7 @@ async def whatsauto(request: Request):
     message = form.get("message", "").strip()
 
     if not message:
-        return Response("", media_type="text/plain; charset=utf-8")
+        return JSONResponse({"reply": ""}, ensure_ascii=False)
 
     message_lower = message.lower()
 
@@ -28,8 +28,10 @@ async def whatsauto(request: Request):
     ]
 
     if not exact_matches.empty:
-        reply_text = exact_matches.iloc[0, 1]
-        return Response(reply_text, media_type="text/plain; charset=utf-8")
+        return JSONResponse(
+            {"reply": exact_matches.iloc[0, 1]},
+            ensure_ascii=False
+        )
 
     # ---------- STAGE 2: fallback (legacy behavior) ----------
     fallback_matches = df[
@@ -45,4 +47,7 @@ async def whatsauto(request: Request):
     else:
         reply_text = ""
 
-    return Response(reply_text, media_type="text/plain; charset=utf-8")
+    return JSONResponse(
+        {"reply": reply_text},
+        ensure_ascii=False
+    )
