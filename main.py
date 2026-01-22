@@ -1,56 +1,54 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 import pandas as pd
-import re
 import json
 import os
 from openai import OpenAI
 
 app = FastAPI()
 
-# Load Excel once at startup
+# ===============================
+# LOAD EXCEL (NAVIGATION ENGINE)
+# ===============================
 df = pd.read_excel("Autoreplies_app.xlsx", dtype=str)
+df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
 
-# OpenAI client
+# ===============================
+# OPENAI CLIENT (INTERPRETER ONLY)
+# ===============================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def detect_intent(message: str) -> dict:
+def detect_intent(message: str) -> str:
     """
-    AI intent classifier.
-    Returns JSON only. No user-facing text.
+    Detect ONLY high-level intent.
+    Returns: compare | explain | how_it_works | none
     """
     prompt = f"""
-You are an intent classifier for a real-estate WhatsApp bot.
+Classify the user's message into ONE of the following intents:
+- compare
+- explain
+- how_it_works
+- none
 
-Classify the user's message into ONE of these intents:
-- lookup (asking about one building / reference)
-- compare (asking to compare two or more buildings)
-- help (asking how to use the bot)
-- unknown
-
-Extract building names or references if present.
-
-Return STRICT JSON only in this format:
-{{
-  "intent": "...",
-  "entities": []
-}}
+Return ONLY the intent word, nothing else.
 
 User message:
-\"{message}\"
+"{message}"
 """
-
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": "You return JSON only."},
+            {"role": "system", "content": "Return only one word."},
             {"role": "user", "content": prompt}
         ],
         temperature=0
     )
+    return response.choices[0].message.content.strip().lower()
 
-    return json.loads(response.choices[0].message.content)
 
+# ===============================
+# WHATSAPP ENDPOINT
+# ===============================
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
@@ -62,36 +60,61 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
-    # 🔍 AI intent detection (currently passive)
+    # ===============================
+    # STEP 2.1 — INTENT INTERCEPTOR
+    # ===============================
     try:
-        intent_data = detect_intent(message)
-        print("AI INTENT:", intent_data)
+        intent = detect_intent(message)
+        print("AI INTENT:", intent)
     except Exception as e:
         print("AI ERROR:", e)
+        intent = "none"
 
-    # ---- EXISTING DATABOT LOGIC (unchanged) ----
+    # ---- INTERCEPT ADVANCED INTENTS ----
+    if intent == "compare":
+        reply_text = (
+            "I can help compare buildings.\n"
+            "Please specify the bedroom type (e.g. 1BR, 2BR, or overall)."
+        )
+        return Response(
+            json.dumps({"reply": reply_text}, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
 
-    message_lower = message.lower()
+    if intent == "explain":
+        reply_text = (
+            "I can explain reports, ROI, or how to read the data.\n"
+            "Please tell me what you’d like explained."
+        )
+        return Response(
+            json.dumps({"reply": reply_text}, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
 
-    word_pattern = re.compile(rf"\b{re.escape(message_lower)}\b")
+    if intent == "how_it_works":
+        reply_text = (
+            "This system uses reference numbers to navigate.\n"
+            "Copy and paste any reference number to continue."
+        )
+        return Response(
+            json.dumps({"reply": reply_text}, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
 
-    exact_matches = df[
-        df.iloc[:, 0]
-        .str.lower()
-        .apply(lambda x: isinstance(x, str) and bool(word_pattern.search(x)))
-    ]
+    # ===============================
+    # DEFAULT — EXCEL NAVIGATION
+    # ===============================
+    message_clean = message.lower()
 
-    if not exact_matches.empty:
-        reply_text = exact_matches.iloc[0, 1]
+    exact_match = df[df.iloc[:, 0].str.lower() == message_clean]
+
+    if len(exact_match) == 1:
+        reply_text = exact_match.iloc[0, 1]
     else:
-        fallback_matches = df[
-            df.iloc[:, 0].str.lower().str.contains(message_lower, na=False)
-            |
-            df.iloc[:, 0].apply(
-                lambda x: isinstance(x, str) and x.lower() in message_lower
-            )
+        fallback = df[
+            df.iloc[:, 0].str.lower().str.contains(message_clean, na=False)
         ]
-        reply_text = fallback_matches.iloc[0, 1] if not fallback_matches.empty else ""
+        reply_text = fallback.iloc[0, 1] if not fallback.empty else ""
 
     return Response(
         json.dumps({"reply": reply_text}, ensure_ascii=False),
