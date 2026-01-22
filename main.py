@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 import pandas as pd
 
 app = FastAPI()
@@ -13,13 +13,10 @@ async def whatsauto(request: Request):
     message = form.get("message", "").strip()
 
     if not message:
-        return JSONResponse({"reply": ""})
+        return Response("", media_type="text/plain; charset=utf-8")
 
     message_lower = message.lower()
 
-    # Bidirectional matching:
-    # 1) Column A contains message
-    # 2) Message contains Column A
     matches = df[
         df.iloc[:, 0].str.lower().str.contains(message_lower, na=False)
         |
@@ -33,6 +30,7 @@ async def whatsauto(request: Request):
     else:
         reply_text = ""
 
-    return JSONResponse({
-        "reply": reply_text
-    })
+    return Response(
+        reply_text,
+        media_type="text/plain; charset=utf-8"
+    )
