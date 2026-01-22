@@ -19,7 +19,7 @@ df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===============================
-# IN-MEMORY CONTEXT
+# IN-MEMORY CONTEXT (PER PHONE)
 # ===============================
 user_context = {}
 
@@ -35,7 +35,7 @@ Slots:
 - buildings (list)
 - bedroom (string or null)
 
-Return JSON:
+Return STRICT JSON:
 {{
   "intent": "...",
   "buildings": [],
@@ -58,33 +58,41 @@ Message:
 
 def find_report(building: str, bedroom: str) -> str:
     """
-    Very conservative lookup:
-    - find building profile
-    - find matching bedroom sales line
-    Returns report text or empty string.
+    Finds SALES report for a given building + bedroom
+    by parsing WhatsApp-style building profile menu.
     """
-    building = building.lower()
-    bedroom = bedroom.lower()
+    building = building.lower().strip()
+    bedroom_num = bedroom.lower().replace(" bedroom", "").replace("br", "").strip()
 
-    # 1) find building profile
+    # 1) Find building profile
     profile = df[df.iloc[:, 0].str.lower() == building]
     if profile.empty:
         return ""
 
-    profile_text = profile.iloc[0, 1]
+    text = profile.iloc[0, 1]
+    lines = [l.strip() for l in text.splitlines()]
 
-    # 2) extract reference from profile text
-    # simple heuristic: "<bedroom> ... Sales 1234567"
-    for line in profile_text.splitlines():
+    in_bedroom_block = False
+
+    for line in lines:
         l = line.lower()
-        if bedroom in l and "sales" in l:
-            parts = l.split()
-            for p in parts:
-                if p.isdigit() and len(p) == 7:
-                    ref = p
-                    report = df[df.iloc[:, 0] == ref]
-                    if not report.empty:
-                        return report.iloc[0, 1]
+
+        # Detect bedroom header like "*3 B/R*"
+        if (bedroom_num in l) and ("b/r" in l or "br" in l):
+            in_bedroom_block = True
+            continue
+
+        # Inside correct bedroom block → look for Sales
+        if in_bedroom_block:
+            if "sales" in l:
+                for token in line.split():
+                    if token.isdigit() and len(token) == 7:
+                        report = df[df.iloc[:, 0] == token]
+                        if not report.empty:
+                            return report.iloc[0, 1]
+            # Stop if next bedroom block starts
+            if "b/r" in l or "br" in l:
+                break
 
     return ""
 
@@ -101,12 +109,16 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
+    # Load or init context
     ctx = user_context.get(phone, {
         "mode": None,
         "buildings": [],
         "bedroom": None
     })
 
+    # ===============================
+    # AI PARSE (INTERPRETER ONLY)
+    # ===============================
     try:
         parsed = detect_intent_and_slots(message)
     except Exception:
@@ -149,7 +161,7 @@ async def whatsauto(request: Request):
         r2 = find_report(b2, bedroom)
 
         intro = (
-            f"Below is a side-by-side view for **{bedroom}** apartments.\n"
+            f"Below is a side-by-side view for *{bedroom}* apartments.\n"
             f"Data is shown as reported, without modification.\n\n"
         )
 
@@ -159,7 +171,7 @@ async def whatsauto(request: Request):
             f"*{b2.upper()}*\n{r2}"
         )
 
-        # reset context
+        # Clear context
         user_context.pop(phone, None)
 
         return Response(
