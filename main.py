@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 import pandas as pd
 import re
+import json
 
 app = FastAPI()
 
@@ -14,7 +15,11 @@ async def whatsauto(request: Request):
     message = form.get("message", "").strip()
 
     if not message:
-        return JSONResponse({"reply": ""}, ensure_ascii=False)
+        payload = {"reply": ""}
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
 
     message_lower = message.lower()
 
@@ -28,9 +33,10 @@ async def whatsauto(request: Request):
     ]
 
     if not exact_matches.empty:
-        return JSONResponse(
-            {"reply": exact_matches.iloc[0, 1]},
-            ensure_ascii=False
+        payload = {"reply": exact_matches.iloc[0, 1]}
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
         )
 
     # ---------- STAGE 2: fallback (legacy behavior) ----------
@@ -47,7 +53,8 @@ async def whatsauto(request: Request):
     else:
         reply_text = ""
 
-    return JSONResponse(
-        {"reply": reply_text},
-        ensure_ascii=False
+    payload = {"reply": reply_text}
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        media_type="application/json; charset=utf-8"
     )
