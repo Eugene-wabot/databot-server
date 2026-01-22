@@ -6,10 +6,11 @@ app = FastAPI()
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     try:
-        data = await request.json()
+        form = await request.form()
+        message = form.get("message", "")
     except:
-        data = {}
+        message = ""
 
     return JSONResponse({
-        "reply": f"RAW DATA:\n{data}"
+        "reply": f"You said: {message}"
     })
