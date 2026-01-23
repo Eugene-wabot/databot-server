@@ -18,41 +18,19 @@ df["_key"] = df.iloc[:, 0].astype(str).str.lower()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 AI_KEYWORDS = [
-    "compare", "vs", "better", "best", "roi", "investment",
-    "average", "highest", "lowest", "top"
+    "compare", "vs", "better", "best",
+    "which", "what", "why", "how",
+    "top", "average", "roi", "investment"
 ]
 
 def needs_ai(text: str) -> bool:
     return any(k in text for k in AI_KEYWORDS)
 
-# ---------- LAYER 0: PREPROCESSOR (NO AI) ----------
-def preprocess_message(msg: str) -> str:
-    noise_patterns = [
-        r"\breports?\b",
-        r"\bsales?\b",
-        r"\brentals?\b",
-        r"\broi\b",
-        r"\bmarket\b",
-        r"\bchart\b",
-        r"\bprice\b",
-        r"\bappreciation\b",
-        r"\b\d+\s*bed(room)?s?\b",   # 1 bedroom, 2 bedrooms
-        r"\b\d+\s*br\b",             # 1br, 2br
-    ]
-
-    cleaned = msg
-    for p in noise_patterns:
-        cleaned = re.sub(p, "", cleaned)
-
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-# ---------- AI HANDLER (SAFE STUB) ----------
+# ---------- AI HANDLER (STUB, SAFE) ----------
 def ai_handle(message: str) -> str:
     return (
-        "I can help with comparisons and ROI questions.\n"
-        "Please specify:\n"
-        "- 2 buildings\n"
-        "- bedroom type (Studio / 1 / 2 / 3)\n\n"
+        "I can help with comparisons and investment questions.\n"
+        "Please be specific.\n\n"
         "Example:\n"
         "Compare 25hours and Attareen ROI 1 bedroom"
     )
@@ -66,10 +44,9 @@ async def whatsauto(request: Request):
     if not message:
         return Response(json.dumps({"reply": ""}), media_type="application/json")
 
-    # 🔹 Layer 0 applied here
-    msg = preprocess_message(message.lower())
+    msg = message.lower()
 
-    # ---------- STAGE 1: PURE REFERENCE NUMBER ----------
+    # ---------- RULE 1: REFERENCE NUMBER ----------
     if re.fullmatch(r"\d{7}", msg):
         m = df[df["_key"] == msg]
         if not m.empty:
@@ -78,28 +55,7 @@ async def whatsauto(request: Request):
                 media_type="application/json; charset=utf-8"
             )
 
-    # ---------- STAGE 2: EXACT WHOLE-WORD MATCH ----------
-    pattern = re.compile(rf"\b{re.escape(msg)}\b")
-
-    exact = df[df["_key"].apply(lambda x: bool(pattern.search(x)))]
-    if not exact.empty and not needs_ai(msg):
-        return Response(
-            json.dumps({"reply": exact.iloc[0, 1]}, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
-        )
-
-    # ---------- STAGE 3: LEGACY FALLBACK MATCH ----------
-    fallback = df[df["_key"].apply(lambda x: x in msg or msg in x)]
-
-    # ---------- NORMAL MODE (NO AI) ----------
-    if not needs_ai(msg):
-        if not fallback.empty:
-            return Response(
-                json.dumps({"reply": fallback.iloc[0, 1]}, ensure_ascii=False),
-                media_type="application/json; charset=utf-8"
-            )
-
-    # ---------- AI MODE ----------
+    # ---------- RULE 2: AI OVERRIDE ----------
     if needs_ai(msg):
         ai_reply = ai_handle(message)
         return Response(
@@ -107,11 +63,14 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
-    # ---------- ABSOLUTE FALLBACK ----------
-    if not fallback.empty:
+    # ---------- RULE 3: KEYWORD WINS ----------
+    matches = df[df["_key"].apply(lambda k: k and k in msg)]
+
+    if not matches.empty:
         return Response(
-            json.dumps({"reply": fallback.iloc[0, 1]}, ensure_ascii=False),
+            json.dumps({"reply": matches.iloc[0, 1]}, ensure_ascii=False),
             media_type="application/json; charset=utf-8"
         )
 
+    # ---------- DEFAULT ----------
     return Response(json.dumps({"reply": ""}), media_type="application/json")
