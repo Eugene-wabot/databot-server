@@ -8,11 +8,8 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# ---------- LOAD DATA ----------
+# Load Excel once at startup (ORIGINAL)
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
-
-# Column A = keywords / reference numbers
-df["_key"] = df.iloc[:, 0].astype(str).str.lower()
 
 # ---------- OPENAI ----------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -23,11 +20,11 @@ AI_KEYWORDS = [
     "top", "average", "roi", "investment"
 ]
 
-def needs_ai(text: str) -> bool:
-    return any(k in text for k in AI_KEYWORDS)
+def ai_should_intercept(message_lower: str) -> bool:
+    return any(k in message_lower for k in AI_KEYWORDS)
 
-# ---------- AI HANDLER (STUB, SAFE) ----------
-def ai_handle(message: str) -> str:
+def ai_reply_stub(message: str) -> str:
+    # SAFE placeholder — no data access yet
     return (
         "I can help with comparisons and investment questions.\n"
         "Please be specific.\n\n"
@@ -35,42 +32,63 @@ def ai_handle(message: str) -> str:
         "Compare 25hours and Attareen ROI 1 bedroom"
     )
 
-# ---------- ENDPOINT ----------
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
-    message = (form.get("message") or "").strip()
+    message = form.get("message", "").strip()
 
     if not message:
-        return Response(json.dumps({"reply": ""}), media_type="application/json")
-
-    msg = message.lower()
-
-    # ---------- RULE 1: REFERENCE NUMBER ----------
-    if re.fullmatch(r"\d{7}", msg):
-        m = df[df["_key"] == msg]
-        if not m.empty:
-            return Response(
-                json.dumps({"reply": m.iloc[0, 1]}, ensure_ascii=False),
-                media_type="application/json; charset=utf-8"
-            )
-
-    # ---------- RULE 2: AI OVERRIDE ----------
-    if needs_ai(msg):
-        ai_reply = ai_handle(message)
+        payload = {"reply": ""}
         return Response(
-            json.dumps({"reply": ai_reply}, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
             media_type="application/json; charset=utf-8"
         )
 
-    # ---------- RULE 3: KEYWORD WINS ----------
-    matches = df[df["_key"].apply(lambda k: k and k in msg)]
+    message_lower = message.lower()
 
-    if not matches.empty:
+    # =====================================================
+    # === AI INTERCEPT (ONLY IF EXPLICITLY TRIGGERED) ===
+    # =====================================================
+    if ai_should_intercept(message_lower):
+        payload = {"reply": ai_reply_stub(message)}
         return Response(
-            json.dumps({"reply": matches.iloc[0, 1]}, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
+    # === END AI INTERCEPT ===
+
+    # ---------- STAGE 1: exact whole-word match (ORIGINAL) ----------
+    word_pattern = re.compile(rf"\b{re.escape(message_lower)}\b")
+
+    exact_matches = df[
+        df.iloc[:, 0]
+        .str.lower()
+        .apply(lambda x: isinstance(x, str) and bool(word_pattern.search(x)))
+    ]
+
+    if not exact_matches.empty:
+        payload = {"reply": exact_matches.iloc[0, 1]}
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
             media_type="application/json; charset=utf-8"
         )
 
-    # ---------- DEFAULT ----------
-    return Response(json.dumps({"reply": ""}), media_type="application/json")
+    # ---------- STAGE 2: fallback (ORIGINAL) ----------
+    fallback_matches = df[
+        df.iloc[:, 0].str.lower().str.contains(message_lower, na=False)
+        |
+        df.iloc[:, 0].apply(
+            lambda x: isinstance(x, str) and x.lower() in message_lower
+        )
+    ]
+
+    if not fallback_matches.empty:
+        reply_text = fallback_matches.iloc[0, 1]
+    else:
+        reply_text = ""
+
+    payload = {"reply": reply_text}
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        media_type="application/json; charset=utf-8"
+    )
