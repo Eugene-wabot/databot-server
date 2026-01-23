@@ -7,7 +7,7 @@ import json
 app = FastAPI()
 
 # Load Excel once at startup
-df = pd.read_excel("Autoreplies_app.xlsx", dtype=str)
+df = pd.read_excel("Autoreplies_app_metadata_sapmle.xlsx", dtype=str)
 
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
