@@ -11,7 +11,7 @@ app = FastAPI()
 # ---------- LOAD DATA ----------
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
-# normalize column A once
+# normalize Column A once
 df["_colA_norm"] = df.iloc[:, 0].astype(str).str.lower()
 
 # ---------- OPENAI ----------
@@ -94,17 +94,16 @@ async def whatsauto(request: Request):
                 media_type="application/json; charset=utf-8"
             )
 
-    # ---------- STAGE 2: KEYWORD MATCH (FIXED) ----------
-fallback_matches = df[
-    df["_colA_norm"].apply(
-        lambda x: isinstance(x, str) and (
-            x in message_lower or message_lower in x
+    # ---------- STAGE 2: KEYWORD MATCH (RESTORED & FIXED) ----------
+    fallback_matches = df[
+        df["_colA_norm"].apply(
+            lambda x: isinstance(x, str) and (
+                x in message_lower or message_lower in x
+            )
         )
-    )
-]
+    ]
 
-
-    # ---------- HARD FAST-PATH: SINGLE BUILDING ----------
+    # ---------- HARD FAST-PATH: SINGLE BUILDING MENU ----------
     if not fallback_matches.empty:
         unique_buildings = fallback_matches["building_name"].str.lower().unique()
 
@@ -122,7 +121,7 @@ fallback_matches = df[
             media_type="application/json; charset=utf-8"
         )
 
-    # ---------- FALLBACK ----------
+    # ---------- FINAL FALLBACK ----------
     if not fallback_matches.empty:
         return Response(
             json.dumps({"reply": fallback_matches.iloc[0, 1]}, ensure_ascii=False),
