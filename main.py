@@ -25,15 +25,13 @@ AI_KEYWORDS = [
 def needs_ai(text: str) -> bool:
     return any(k in text for k in AI_KEYWORDS)
 
-# ---------- AI (ISOLATED & SAFE) ----------
+# ---------- AI HANDLER (SAFE STUB) ----------
 def ai_handle(message: str) -> str:
-    # For now: DO NOT SELECT DATA
-    # Only ask clarification or refuse invalid scope
     return (
         "I can help with comparisons and ROI questions.\n"
         "Please specify:\n"
         "- 2 buildings\n"
-        "- bedroom type (Studio / 1 / 2 / 3)\n"
+        "- bedroom type (Studio / 1 / 2 / 3)\n\n"
         "Example:\n"
         "Compare 25hours and Attareen ROI 1 bedroom"
     )
@@ -69,18 +67,17 @@ async def whatsauto(request: Request):
         )
 
     # ---------- STAGE 3: LEGACY FALLBACK MATCH ----------
-    fallback = df[
-        df["_key"].apply(lambda x: x in msg or msg in x)
-    ]
+    fallback = df[df["_key"].apply(lambda x: x in msg or msg in x)]
 
     # ---------- NORMAL MODE (NO AI) ----------
-    if not fallback.empty and not needs_ai(msg):
-        return Response(
-            json.dumps({"reply": fallback.iloc[0, 1]}, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
-        )
+    if not needs_ai(msg):
+        if not fallback.empty:
+            return Response(
+                json.dumps({"reply": fallback.iloc[0, 1]}, ensure_ascii=False),
+                media_type="application/json; charset=utf-8"
+            )
 
-    # ---------- AI MODE (ONLY HERE) ----------
+    # ---------- AI MODE ----------
     if needs_ai(msg):
         ai_reply = ai_handle(message)
         return Response(
@@ -88,7 +85,7 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
-    # ---------- FINAL FALLBACK ----------
+    # ---------- ABSOLUTE FALLBACK ----------
     if not fallback.empty:
         return Response(
             json.dumps({"reply": fallback.iloc[0, 1]}, ensure_ascii=False),
