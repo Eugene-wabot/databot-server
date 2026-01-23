@@ -94,12 +94,15 @@ async def whatsauto(request: Request):
                 media_type="application/json; charset=utf-8"
             )
 
-    # ---------- STAGE 2: KEYWORD MATCH ----------
-    fallback_matches = df[
-        df["_colA_norm"].str.contains(message_lower, na=False)
-        |
-        df["_colA_norm"].apply(lambda x: x in message_lower)
-    ]
+    # ---------- STAGE 2: KEYWORD MATCH (FIXED) ----------
+fallback_matches = df[
+    df["_colA_norm"].apply(
+        lambda x: isinstance(x, str) and (
+            x in message_lower or message_lower in x
+        )
+    )
+]
+
 
     # ---------- HARD FAST-PATH: SINGLE BUILDING ----------
     if not fallback_matches.empty:
