@@ -25,6 +25,27 @@ AI_KEYWORDS = [
 def needs_ai(text: str) -> bool:
     return any(k in text for k in AI_KEYWORDS)
 
+# ---------- LAYER 0: PREPROCESSOR (NO AI) ----------
+def preprocess_message(msg: str) -> str:
+    noise_patterns = [
+        r"\breports?\b",
+        r"\bsales?\b",
+        r"\brentals?\b",
+        r"\broi\b",
+        r"\bmarket\b",
+        r"\bchart\b",
+        r"\bprice\b",
+        r"\bappreciation\b",
+        r"\b\d+\s*bed(room)?s?\b",   # 1 bedroom, 2 bedrooms
+        r"\b\d+\s*br\b",             # 1br, 2br
+    ]
+
+    cleaned = msg
+    for p in noise_patterns:
+        cleaned = re.sub(p, "", cleaned)
+
+    return re.sub(r"\s+", " ", cleaned).strip()
+
 # ---------- AI HANDLER (SAFE STUB) ----------
 def ai_handle(message: str) -> str:
     return (
@@ -45,7 +66,8 @@ async def whatsauto(request: Request):
     if not message:
         return Response(json.dumps({"reply": ""}), media_type="application/json")
 
-    msg = message.lower()
+    # 🔹 Layer 0 applied here
+    msg = preprocess_message(message.lower())
 
     # ---------- STAGE 1: PURE REFERENCE NUMBER ----------
     if re.fullmatch(r"\d{7}", msg):
