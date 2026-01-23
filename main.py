@@ -11,7 +11,7 @@ app = FastAPI()
 # ---------- LOAD DATA ----------
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
-# normalize Column A once
+# normalize Column A (keywords / refs)
 df["_colA_norm"] = df.iloc[:, 0].astype(str).str.lower()
 
 # ---------- OPENAI ----------
@@ -33,9 +33,9 @@ You are a strict controller for a real estate WhatsApp bot.
 Rules:
 - Use metadata only
 - Do NOT invent data
-- Do NOT summarize or rewrite reports
+- Do NOT rewrite reports
 - ROI requires bedroom_type
-- Max 2 buildings for comparison
+- Max 2 buildings
 
 User message:
 "{message}"
@@ -46,13 +46,12 @@ OR
 {{"action":"reports","rows":[ROW_INDEXES]}}
 """
 
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-
     try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
         data = json.loads(resp.choices[0].message.content)
     except Exception:
         return ""
@@ -94,7 +93,22 @@ async def whatsauto(request: Request):
                 media_type="application/json; charset=utf-8"
             )
 
-    # ---------- STAGE 2: KEYWORD MATCH (RESTORED & FIXED) ----------
+    # ---------- STAGE 2: EXACT WHOLE-WORD MATCH (RESTORED) ----------
+    word_pattern = re.compile(rf"\b{re.escape(message_lower)}\b")
+
+    exact_matches = df[
+        df["_colA_norm"].apply(
+            lambda x: isinstance(x, str) and bool(word_pattern.search(x))
+        )
+    ]
+
+    if not exact_matches.empty:
+        return Response(
+            json.dumps({"reply": exact_matches.iloc[0, 1]}, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
+
+    # ---------- STAGE 3: LEGACY FALLBACK MATCH ----------
     fallback_matches = df[
         df["_colA_norm"].apply(
             lambda x: isinstance(x, str) and (
@@ -103,17 +117,14 @@ async def whatsauto(request: Request):
         )
     ]
 
-    # ---------- HARD FAST-PATH: SINGLE BUILDING MENU ----------
-    if not fallback_matches.empty:
-        unique_buildings = fallback_matches["building_name"].str.lower().unique()
+    # ---------- FAST PATH (NO AI) ----------
+    if not fallback_matches.empty and not needs_ai(message_lower):
+        return Response(
+            json.dumps({"reply": fallback_matches.iloc[0, 1]}, ensure_ascii=False),
+            media_type="application/json; charset=utf-8"
+        )
 
-        if len(unique_buildings) == 1 and not needs_ai(message_lower):
-            return Response(
-                json.dumps({"reply": fallback_matches.iloc[0, 1]}, ensure_ascii=False),
-                media_type="application/json; charset=utf-8"
-            )
-
-    # ---------- STAGE 3: AI ----------
+    # ---------- AI PATH ----------
     if needs_ai(message_lower):
         ai_reply = ai_handle(message)
         return Response(
