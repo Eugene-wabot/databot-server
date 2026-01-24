@@ -9,19 +9,24 @@ app = FastAPI()
 # ---------- LOAD & NORMALIZE DATA ----------
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
-# Normalize Column A ONCE (this is the missing piece)
+def normalize(text: str) -> str:
+    return (
+        text.replace("\u00a0", " ")
+            .strip()
+            .lower()
+    )
+
+# Normalize Column A ONCE
 df["_key"] = (
     df.iloc[:, 0]
       .astype(str)
-      .str.lower()
-      .str.replace("\u00a0", " ", regex=False)
-      .str.strip()
+      .apply(lambda x: normalize(x.replace(".0", "")))
 )
 
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
-    message = form.get("message", "").strip()
+    message = form.get("message", "")
 
     if not message:
         payload = {"reply": ""}
@@ -30,11 +35,11 @@ async def whatsauto(request: Request):
             media_type="application/json; charset=utf-8"
         )
 
-    message_lower = message.lower().strip()
+    message_norm = normalize(message)
 
     # ---------- STAGE 1: exact reference number ----------
-    if re.fullmatch(r"\d{7}", message_lower):
-        ref_match = df[df["_key"] == message_lower]
+    if re.fullmatch(r"\d{7}", message_norm):
+        ref_match = df[df["_key"] == message_norm]
         if not ref_match.empty:
             payload = {"reply": ref_match.iloc[0, 1]}
             return Response(
@@ -44,7 +49,7 @@ async def whatsauto(request: Request):
 
     # ---------- STAGE 2: keyword anywhere in message ----------
     keyword_matches = df[
-        df["_key"].apply(lambda k: k and k in message_lower)
+        df["_key"].apply(lambda k: k and k in message_norm)
     ]
 
     if not keyword_matches.empty:
