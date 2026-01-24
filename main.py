@@ -6,62 +6,68 @@ import json
 
 app = FastAPI()
 
-# ---------- LOAD & NORMALIZE DATA ----------
+# Load Excel once at startup
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
-def normalize(text: str) -> str:
-    return (
-        text.replace("\u00a0", " ")
-            .strip()
-            .lower()
-    )
-
-# Normalize Column A ONCE
-df["_key"] = (
+# Normalize Column A once (keep the full string, because it contains ref + building + tags)
+df["_colA"] = (
     df.iloc[:, 0]
-      .astype(str)
-      .apply(lambda x: normalize(x.replace(".0", "")))
+    .astype(str)
+    .str.replace("\u00a0", " ", regex=False)
+    .str.strip()
+    .str.lower()
 )
+
+NO_MATCH_TEXT = "Please rephrase, I didn’t find anything."
+
+def wa_reply(text: str) -> Response:
+    return Response(
+        json.dumps({"reply": text}, ensure_ascii=False),
+        media_type="application/json; charset=utf-8"
+    )
 
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
-    message = form.get("message", "")
+    message = (form.get("message") or "").strip()
 
     if not message:
-        payload = {"reply": ""}
-        return Response(
-            json.dumps(payload, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
-        )
+        return wa_reply("")
 
-    message_norm = normalize(message)
+    message_lower = (
+        message.lower()
+        .replace("\u00a0", " ")
+        .strip()
+    )
 
-    # ---------- STAGE 1: exact reference number ----------
-    if re.fullmatch(r"\d{7}", message_norm):
-        ref_match = df[df["_key"] == message_norm]
-        if not ref_match.empty:
-            payload = {"reply": ref_match.iloc[0, 1]}
-            return Response(
-                json.dumps(payload, ensure_ascii=False),
-                media_type="application/json; charset=utf-8"
-            )
+    # ---------- STAGE 1: reference number (7 digits) ----------
+    # Column A might look like: "1006423, *SALES*"
+    if re.fullmatch(r"\d{7}", message_lower):
+        ref = message_lower
+        ref_pattern = re.compile(rf"(^|[^0-9]){re.escape(ref)}([^0-9]|$)")
+        ref_matches = df[df["_colA"].apply(lambda x: bool(ref_pattern.search(x)))]
+        if not ref_matches.empty:
+            return wa_reply(ref_matches.iloc[0, 1])
 
-    # ---------- STAGE 2: keyword anywhere in message ----------
-    keyword_matches = df[
-        df["_key"].apply(lambda k: k and k in message_norm)
+    # ---------- STAGE 2: exact whole-word match (original behavior) ----------
+    # This catches cases where Column A is exactly a word/phrase.
+    word_pattern = re.compile(rf"\b{re.escape(message_lower)}\b")
+    exact_matches = df[df["_colA"].apply(lambda x: bool(word_pattern.search(x)))]
+
+    if not exact_matches.empty:
+        return wa_reply(exact_matches.iloc[0, 1])
+
+    # ---------- STAGE 3: fallback (original behavior) ----------
+    # 1) Column A contains the message (e.g. "burj crown" inside "1008918, burj crown, *build*")
+    # 2) Or Column A is contained in the message
+    fallback_matches = df[
+        df["_colA"].str.contains(re.escape(message_lower), na=False)
+        |
+        df["_colA"].apply(lambda x: isinstance(x, str) and x in message_lower)
     ]
 
-    if not keyword_matches.empty:
-        payload = {"reply": keyword_matches.iloc[0, 1]}
-        return Response(
-            json.dumps(payload, ensure_ascii=False),
-            media_type="application/json; charset=utf-8"
-        )
+    if not fallback_matches.empty:
+        return wa_reply(fallback_matches.iloc[0, 1])
 
     # ---------- NO MATCH ----------
-    payload = {"reply": "Please rephrase, I didn’t find anything."}
-    return Response(
-        json.dumps(payload, ensure_ascii=False),
-        media_type="application/json; charset=utf-8"
-    )
+    return wa_reply(NO_MATCH_TEXT)
