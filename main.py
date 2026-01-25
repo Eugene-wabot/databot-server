@@ -24,6 +24,15 @@ def reply(text):
         media_type="application/json; charset=utf-8"
     )
 
+def parse_percent(value):
+    if value is None:
+        return None
+    v = str(value).strip().replace("%", "")
+    try:
+        return float(v)
+    except:
+        return None
+
 # ---------------- Preload Layer 0 keyword rows ----------------
 KEYWORD_ROWS = []
 for _, row in df.iterrows():
@@ -82,8 +91,14 @@ def compare_roi(building_ids, bedroom):
 
     a, b = subset.iloc[0], subset.iloc[1]
 
-    roi_a, roi_b = float(a["Gross_roi"]), float(b["Gross_roi"])
-    rent_a, rent_b = a["Median_rent"], b["Median_rent"]
+    roi_a = parse_percent(a["Gross_roi"])
+    roi_b = parse_percent(b["Gross_roi"])
+
+    if roi_a is None or roi_b is None:
+        return None
+
+    rent_a = a["Median_rent"]
+    rent_b = b["Median_rent"]
 
     winner = a if roi_a > roi_b else b
 
