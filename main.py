@@ -8,47 +8,40 @@ app = FastAPI()
 
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
-# ---------------- Helpers ----------------
-def normalize(text: str) -> str:
-    return (
-        str(text)
-        .replace("\u00a0", " ")
-        .replace("\n", " ")
-        .lower()
-        .strip()
-    )
+# ---------------- Utilities ----------------
+def normalize(t):
+    return str(t).replace("\u00a0", " ").replace("\n", " ").lower().strip()
 
-def wa_reply(text: str) -> Response:
+def reply(text):
     return Response(
         json.dumps({"reply": text}, ensure_ascii=False),
         media_type="application/json; charset=utf-8"
     )
 
-# ---------------- Layer 0 keywords ----------------
-rows = []
+# ---------------- Preload keyword rows (Layer 0) ----------------
+KEYWORD_ROWS = []
 for _, row in df.iterrows():
-    if not isinstance(row.iloc[0], str):
+    if not isinstance(row["key_word"], str):
         continue
-
-    keywords = [normalize(k) for k in row.iloc[0].split(",") if normalize(k)]
-    rows.append({
+    keywords = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
+    KEYWORD_ROWS.append({
         "keywords": keywords,
-        "reply": row.iloc[1],
+        "reply": row["report"],
         "building_id": row.get("building_id")
     })
 
-# ---------------- AI intent ----------------
-AI_INTENT_KEYWORDS = [
+# ---------------- AI intent detection ----------------
+AI_INTENT_WORDS = [
     "compare", "vs", "versus",
     "better", "best",
     "roi", "investment", "yield"
 ]
 
-def ai_intent_detected(msg: str) -> bool:
-    return any(k in msg for k in AI_INTENT_KEYWORDS)
+def is_ai_intent(msg):
+    return any(w in msg for w in AI_INTENT_WORDS)
 
-# ---------------- Bedroom parsing (flexible) ----------------
-def extract_bedroom(msg: str):
+# ---------------- Bedroom extraction ----------------
+def extract_bedroom(msg):
     if "studio" in msg:
         return "studio"
 
@@ -59,14 +52,14 @@ def extract_bedroom(msg: str):
         "4": [r"\b4\s*br\b", r"\b4\s*bed", r"\bfour\b"],
     }
 
-    for k, pats in patterns.items():
+    for b, pats in patterns.items():
         for p in pats:
             if re.search(p, msg):
-                return k
+                return b
     return None
 
 # ---------------- Layer 2: ROI comparison ----------------
-def layer2_compare_roi(building_ids, bedroom):
+def compare_roi(building_ids, bedroom):
     subset = df[
         (df["building_id"].isin(building_ids)) &
         (df["bedroom_type"] == bedroom) &
@@ -83,64 +76,72 @@ def layer2_compare_roi(building_ids, bedroom):
 
     winner = a if roi_a > roi_b else b
 
-    reply = (
+    return (
         f"{a['building_name']} ({bedroom}BR): ROI {roi_a:.2f}%, "
         f"Median rent {rent_a}\n"
         f"{b['building_name']} ({bedroom}BR): ROI {roi_b:.2f}%, "
         f"Median rent {rent_b}\n\n"
-        f"{winner['building_name']} performs better mainly due to "
-        f"{'stronger rental levels' if winner['Median_rent'] else 'pricing dynamics'}."
+        f"{winner['building_name']} offers better investment returns "
+        f"primarily due to stronger rental performance."
     )
-    return reply
 
 # ---------------- Main endpoint ----------------
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
     message = (form.get("message") or "").strip()
+
     if not message:
-        return wa_reply("")
+        return reply("")
 
     msg = normalize(message)
 
-    # ---------- Layer 0: reference number ----------
-    ref = re.search(r"\b(\d{7})\b", msg)
-    if ref:
-        for r in rows:
-            if ref.group(1) in r["keywords"]:
-                return wa_reply(r["reply"])
-
-    # ---------- Layer 0: keyword match ----------
-    matched_buildings = []
-    for r in rows:
-        for kw in r["keywords"]:
-            if re.search(rf"\b{re.escape(kw)}\b", msg):
-                matched_buildings.append(r["building_id"])
-                return wa_reply(r["reply"])
-
-    # ---------- Layer 2: ROI compare ----------
-    if ai_intent_detected(msg):
+    # ==========================================================
+    # LAYER 2 FIRST — AI / ANALYTICAL REQUESTS
+    # ==========================================================
+    if is_ai_intent(msg):
         bedroom = extract_bedroom(msg)
-        building_ids = list(
-            df[df["key_word"].apply(lambda x: any(k in msg for k in normalize(x).split(",")))]
-            ["building_id"].unique()
-        )
 
-        if len(building_ids) == 2 and bedroom:
-            result = layer2_compare_roi(building_ids, bedroom)
+        matched_ids = set()
+        for r in KEYWORD_ROWS:
+            if any(re.search(rf"\b{re.escape(k)}\b", msg) for k in r["keywords"]):
+                if r["building_id"]:
+                    matched_ids.add(r["building_id"])
+
+        if len(matched_ids) == 2 and bedroom:
+            result = compare_roi(list(matched_ids), bedroom)
             if result:
-                return wa_reply(result)
+                return reply(result)
 
-        return wa_reply(
-            "To compare ROI, please specify:\n"
+        return reply(
+            "To analyze investment or ROI, please specify:\n"
             "- exactly 2 buildings\n"
             "- bedroom type\n\n"
             "Example:\n"
             "Compare Burj Crown and 25hours ROI 1 bedroom"
         )
 
-    # ---------- AI fallback ----------
-    return wa_reply(
+    # ==========================================================
+    # LAYER 0 — ORIGINAL DATABOT BEHAVIOR
+    # ==========================================================
+
+    # --- Reference number ---
+    ref = re.search(r"\b\d{7}\b", msg)
+    if ref:
+        for r in KEYWORD_ROWS:
+            if ref.group() in r["keywords"]:
+                return reply(r["reply"])
+
+    # --- Keyword match (ANYWHERE in sentence) ---
+    for r in KEYWORD_ROWS:
+        for kw in r["keywords"]:
+            if re.search(rf"\b{re.escape(kw)}\b", msg):
+                return reply(r["reply"])
+
+    # ==========================================================
+    # FALLBACK
+    # ==========================================================
+    return reply(
         "I didn’t find a specific building or reference number.\n\n"
         "You can try:\n"
         "- sending a building name\n"
