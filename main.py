@@ -103,10 +103,13 @@ async def whatsauto(request: Request):
         bedroom = extract_bedroom(msg)
 
         matched_ids = set()
-        for r in KEYWORD_ROWS:
-            if any(re.search(rf"\b{re.escape(k)}\b", msg) for k in r["keywords"]):
-                if r["building_id"]:
-                    matched_ids.add(r["building_id"])
+
+        menu_rows = df[df["structural_type"] == "menu"]
+
+        for _, row in menu_rows.iterrows():
+            keywords = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
+            if any(re.search(rf"\b{re.escape(k)}\b", msg) for k in keywords):
+              matched_ids.add(row["building_id"])
 
         if len(matched_ids) == 2 and bedroom:
             result = compare_roi(list(matched_ids), bedroom)
