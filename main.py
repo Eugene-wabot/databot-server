@@ -87,7 +87,7 @@ def compare_roi(building_ids, bedroom):
     ]
 
     if len(subset) != 2:
-        return None
+        return None, None
 
     a, b = subset.iloc[0], subset.iloc[1]
 
@@ -95,14 +95,14 @@ def compare_roi(building_ids, bedroom):
     roi_b = parse_percent(b["Gross_roi"])
 
     if roi_a is None or roi_b is None:
-        return None
+        return None, None
 
     rent_a = a["Median_rent"]
     rent_b = b["Median_rent"]
 
     winner = a if roi_a > roi_b else b
 
-    return (
+    analysis = (
         f"{a['building_name']} ({bedroom}BR): ROI {roi_a:.2f}%, "
         f"Median rent {rent_a}\n"
         f"{b['building_name']} ({bedroom}BR): ROI {roi_b:.2f}%, "
@@ -110,6 +110,15 @@ def compare_roi(building_ids, bedroom):
         f"{winner['building_name']} offers better investment returns "
         f"primarily due to stronger rental performance."
     )
+
+    return analysis, subset
+
+# ---------------- Fetch ROI reports (Layer 2.1) ----------------
+def fetch_roi_reports(subset):
+    reports = []
+    for _, row in subset.iterrows():
+        reports.append(row["report"])
+    return reports
 
 # ---------------- Main endpoint ----------------
 @app.post("/whatsauto")
@@ -123,7 +132,7 @@ async def whatsauto(request: Request):
     msg = normalize(message)
 
     # ==================================================
-    # LAYER 2 — AI / ANALYTICAL REQUESTS (FIRST)
+    # LAYER 2 + 2.1 — AI / ANALYTICAL REQUESTS (FIRST)
     # ==================================================
     if is_ai_intent(msg):
         bedroom = extract_bedroom(msg)
@@ -137,9 +146,11 @@ async def whatsauto(request: Request):
                 matched_ids.add(row["building_id"])
 
         if len(matched_ids) == 2 and bedroom:
-            result = compare_roi(list(matched_ids), bedroom)
-            if result:
-                return reply(result)
+            analysis, subset = compare_roi(list(matched_ids), bedroom)
+            if analysis:
+                reports = fetch_roi_reports(subset)
+                full_reply = analysis + "\n\n" + "\n\n".join(reports)
+                return reply(full_reply)
             else:
                 return reply(
                     "I found both buildings, but ROI data for this bedroom "
