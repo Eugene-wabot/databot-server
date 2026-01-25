@@ -7,7 +7,7 @@ import json
 app = FastAPI()
 
 # ===============================
-# Load Excel once (Layer 0 data)
+# Load Excel once
 # ===============================
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
@@ -41,6 +41,7 @@ for _, row in df.iterrows():
     if not isinstance(col_a, str):
         continue
 
+    # Column A is comma-separated keywords (authoritative)
     keywords = [
         normalize(k)
         for k in col_a.split(",")
@@ -66,13 +67,13 @@ def ai_intent_detected(message: str) -> bool:
     return any(k in message for k in AI_INTENT_KEYWORDS)
 
 # ===============================
-# AI stub replies (safe for now)
+# AI stub replies (NO metadata yet)
 # ===============================
 def ai_analysis_stub(message: str) -> str:
     return (
-        "I can help with analysis and comparisons.\n\n"
-        "Please specify:\n"
-        "- building names\n"
+        "I can help with comparisons and investment analysis.\n\n"
+        "To proceed, please specify:\n"
+        "- exactly 2 buildings\n"
         "- bedroom type (Studio / 1 / 2 / 3)\n\n"
         "Example:\n"
         "Compare Burj Crown and 25hours ROI 1 bedroom"
@@ -103,13 +104,19 @@ async def whatsauto(request: Request):
     msg = normalize(message)
 
     # -------------------------------------------------
+    # LAYER 1 — AI intent (OVERRIDES Layer 0)
+    # -------------------------------------------------
+    if ai_intent_detected(msg):
+        return wa_reply(ai_analysis_stub(message))
+
+    # -------------------------------------------------
     # LAYER 0 — Reference number anywhere in message
     # -------------------------------------------------
     ref_search = re.search(r"\b(\d{7})\b", msg)
     if ref_search:
         ref = ref_search.group(1)
         for row in rows:
-            if any(ref == kw for kw in row["keywords"]):
+            if ref in row["keywords"]:
                 return wa_reply(row["reply"])
 
     # -------------------------------------------------
@@ -119,12 +126,6 @@ async def whatsauto(request: Request):
         for kw in row["keywords"]:
             if re.search(rf"\b{re.escape(kw)}\b", msg):
                 return wa_reply(row["reply"])
-
-    # -------------------------------------------------
-    # LAYER 1 — AI intent detected
-    # -------------------------------------------------
-    if ai_intent_detected(msg):
-        return wa_reply(ai_analysis_stub(message))
 
     # -------------------------------------------------
     # LAYER 1 — AI fallback helper
