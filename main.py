@@ -10,7 +10,13 @@ df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str)
 
 # ---------------- Utilities ----------------
 def normalize(t):
-    return str(t).replace("\u00a0", " ").replace("\n", " ").lower().strip()
+    return (
+        str(t)
+        .replace("\u00a0", " ")
+        .replace("\n", " ")
+        .lower()
+        .strip()
+    )
 
 def reply(text):
     return Response(
@@ -18,16 +24,17 @@ def reply(text):
         media_type="application/json; charset=utf-8"
     )
 
-# ---------------- Preload keyword rows (Layer 0) ----------------
+# ---------------- Preload Layer 0 keyword rows ----------------
 KEYWORD_ROWS = []
 for _, row in df.iterrows():
-    if not isinstance(row["key_word"], str):
+    if not isinstance(row.get("key_word"), str):
         continue
     keywords = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
     KEYWORD_ROWS.append({
         "keywords": keywords,
         "reply": row["report"],
-        "building_id": row.get("building_id")
+        "building_id": row.get("building_id"),
+        "structural_type": row.get("structural_type")
     })
 
 # ---------------- AI intent detection ----------------
@@ -42,6 +49,8 @@ def is_ai_intent(msg):
 
 # ---------------- Bedroom extraction ----------------
 def extract_bedroom(msg):
+    msg = msg.lower()
+
     if "studio" in msg:
         return "studio"
 
@@ -60,9 +69,11 @@ def extract_bedroom(msg):
 
 # ---------------- Layer 2: ROI comparison ----------------
 def compare_roi(building_ids, bedroom):
+    bedroom = str(bedroom).lower().strip()
+
     subset = df[
         (df["building_id"].isin(building_ids)) &
-        (df["bedroom_type"] == bedroom) &
+        (df["bedroom_type"].astype(str).str.lower().str.strip() == bedroom) &
         (df["Gross_roi"].notna())
     ]
 
@@ -96,37 +107,41 @@ async def whatsauto(request: Request):
 
     msg = normalize(message)
 
-    # ==========================================================
-    # LAYER 2 FIRST — AI / ANALYTICAL REQUESTS
-    # ==========================================================
+    # ==================================================
+    # LAYER 2 — AI / ANALYTICAL REQUESTS (FIRST)
+    # ==================================================
     if is_ai_intent(msg):
         bedroom = extract_bedroom(msg)
 
         matched_ids = set()
-
         menu_rows = df[df["structural_type"] == "menu"]
 
         for _, row in menu_rows.iterrows():
             keywords = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
-            if any(re.search(rf"\b{re.escape(k)}\b", msg) for k in keywords):
-              matched_ids.add(row["building_id"])
+            if any(k in msg for k in keywords):
+                matched_ids.add(row["building_id"])
 
         if len(matched_ids) == 2 and bedroom:
             result = compare_roi(list(matched_ids), bedroom)
             if result:
                 return reply(result)
+            else:
+                return reply(
+                    "I found both buildings, but ROI data for this bedroom "
+                    "is missing or inconsistent."
+                )
 
         return reply(
             "To analyze investment or ROI, please specify:\n"
             "- exactly 2 buildings\n"
             "- bedroom type\n\n"
             "Example:\n"
-            "Compare Burj Crown and 25hours ROI 1 bedroom"
+            "Compare Burj Crown and DT1 ROI 1 bedroom"
         )
 
-    # ==========================================================
+    # ==================================================
     # LAYER 0 — ORIGINAL DATABOT BEHAVIOR
-    # ==========================================================
+    # ==================================================
 
     # --- Reference number ---
     ref = re.search(r"\b\d{7}\b", msg)
@@ -135,15 +150,15 @@ async def whatsauto(request: Request):
             if ref.group() in r["keywords"]:
                 return reply(r["reply"])
 
-    # --- Keyword match (ANYWHERE in sentence) ---
+    # --- Keyword match anywhere ---
     for r in KEYWORD_ROWS:
         for kw in r["keywords"]:
-            if re.search(rf"\b{re.escape(kw)}\b", msg):
+            if kw in msg:
                 return reply(r["reply"])
 
-    # ==========================================================
+    # ==================================================
     # FALLBACK
-    # ==========================================================
+    # ==================================================
     return reply(
         "I didn’t find a specific building or reference number.\n\n"
         "You can try:\n"
