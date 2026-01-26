@@ -50,7 +50,7 @@ for _, row in df.iterrows():
 AI_INTENT_WORDS = [
     "compare", "vs", "versus",
     "better", "best",
-    "roi", "investment", "yield"
+    "roi", "investment", "yield", "good investment"
 ]
 
 def is_ai_intent(msg):
@@ -76,8 +76,8 @@ def extract_bedroom(msg):
                 return b
     return None
 
-# ---------------- Layer 2: ROI comparison ----------------
-def compare_roi(building_ids, bedroom):
+# ---------------- ROI data fetch ----------------
+def get_roi_subset(building_ids, bedroom):
     bedroom = str(bedroom).lower().strip()
 
     subset = df[
@@ -86,39 +86,7 @@ def compare_roi(building_ids, bedroom):
         (df["Gross_roi"].notna())
     ]
 
-    if len(subset) != 2:
-        return None, None
-
-    a, b = subset.iloc[0], subset.iloc[1]
-
-    roi_a = parse_percent(a["Gross_roi"])
-    roi_b = parse_percent(b["Gross_roi"])
-
-    if roi_a is None or roi_b is None:
-        return None, None
-
-    rent_a = a["Median_rent"]
-    rent_b = b["Median_rent"]
-
-    winner = a if roi_a > roi_b else b
-
-    analysis = (
-        f"{a['building_name']} ({bedroom}BR): ROI {roi_a:.2f}%, "
-        f"Median rent {rent_a}\n"
-        f"{b['building_name']} ({bedroom}BR): ROI {roi_b:.2f}%, "
-        f"Median rent {rent_b}\n\n"
-        f"{winner['building_name']} offers better investment returns "
-        f"primarily due to stronger rental performance."
-    )
-
-    return analysis, subset
-
-# ---------------- Fetch ROI reports (Layer 2.1) ----------------
-def fetch_roi_reports(subset):
-    reports = []
-    for _, row in subset.iterrows():
-        reports.append(row["report"])
-    return reports
+    return subset if len(subset) > 0 else None
 
 # ---------------- Main endpoint ----------------
 @app.post("/whatsauto")
@@ -132,7 +100,7 @@ async def whatsauto(request: Request):
     msg = normalize(message)
 
     # ==================================================
-    # LAYER 2 + 2.1 — AI / ANALYTICAL REQUESTS (FIRST)
+    # LAYER 2 — AI / ANALYTICAL REQUESTS
     # ==================================================
     if is_ai_intent(msg):
         bedroom = extract_bedroom(msg)
@@ -145,38 +113,75 @@ async def whatsauto(request: Request):
             if any(k in msg for k in keywords):
                 matched_ids.add(row["building_id"])
 
+        # ---------- Layer 2.1: comparison ----------
         if len(matched_ids) == 2 and bedroom:
-            analysis, subset = compare_roi(list(matched_ids), bedroom)
-            if analysis:
-                reports = fetch_roi_reports(subset)
-                full_reply = analysis + "\n\n" + "\n\n".join(reports)
-                return reply(full_reply)
-            else:
-                return reply(
-                    "I found both buildings, but ROI data for this bedroom "
-                    "is missing or inconsistent."
+            subset = get_roi_subset(list(matched_ids), bedroom)
+            if subset is not None and len(subset) == 2:
+                a, b = subset.iloc[0], subset.iloc[1]
+
+                roi_a = parse_percent(a["Gross_roi"])
+                roi_b = parse_percent(b["Gross_roi"])
+
+                if roi_a is None or roi_b is None:
+                    return reply("ROI data is unavailable for this request.")
+
+                analysis = (
+                    f"{a['building_name']} ({bedroom}BR): ROI {roi_a:.2f}%, "
+                    f"Median rent {a['Median_rent']}\n"
+                    f"{b['building_name']} ({bedroom}BR): ROI {roi_b:.2f}%, "
+                    f"Median rent {b['Median_rent']}\n\n"
+                    f"{a['building_name'] if roi_a > roi_b else b['building_name']} "
+                    f"has the higher gross ROI for this bedroom type."
                 )
+
+                reports = list(subset["report"])
+                return reply(analysis + "\n\n" + "\n\n".join(reports))
+
+            return reply(
+                "I found both buildings, but ROI data for this bedroom "
+                "is missing or inconsistent."
+            )
+
+        # ---------- Layer 2.2: single building ----------
+        if len(matched_ids) == 1:
+            if not bedroom:
+                return reply("Which bedroom type are you interested in?")
+
+            subset = get_roi_subset(list(matched_ids), bedroom)
+            if subset is None:
+                return reply("ROI data is unavailable for this bedroom type.")
+
+            row = subset.iloc[0]
+            roi = parse_percent(row["Gross_roi"])
+
+            if roi is None:
+                return reply("ROI data is unavailable for this request.")
+
+            analysis = (
+                f"{row['building_name']} ({bedroom}BR): "
+                f"Gross ROI {roi:.2f}%, Median rent {row['Median_rent']}."
+            )
+
+            return reply(analysis + "\n\n" + row["report"])
 
         return reply(
             "To analyze investment or ROI, please specify:\n"
-            "- exactly 2 buildings\n"
+            "- building name\n"
             "- bedroom type\n\n"
             "Example:\n"
-            "Compare Burj Crown and DT1 ROI 1 bedroom"
+            "Is Burj Crown a good investment for 1 bedroom?"
         )
 
     # ==================================================
     # LAYER 0 — ORIGINAL DATABOT BEHAVIOR
     # ==================================================
 
-    # --- Reference number ---
     ref = re.search(r"\b\d{7}\b", msg)
     if ref:
         for r in KEYWORD_ROWS:
             if ref.group() in r["keywords"]:
                 return reply(r["reply"])
 
-    # --- Keyword match anywhere ---
     for r in KEYWORD_ROWS:
         for kw in r["keywords"]:
             if kw in msg:
@@ -190,5 +195,5 @@ async def whatsauto(request: Request):
         "You can try:\n"
         "- sending a building name\n"
         "- sending a reference number\n"
-        "- asking to compare two buildings"
+        "- asking an investment or comparison question"
     )
