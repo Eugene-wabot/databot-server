@@ -61,20 +61,34 @@ def is_ai_intent(msg):
 def extract_bedroom(msg):
     msg = msg.lower()
 
-    if "studio" in msg:
+    # studio
+    if re.search(r"\bstudio\b", msg):
         return "studio"
 
-    patterns = {
-        "1": [r"\b1\s*br\b", r"\b1\s*bed\b", r"\bone\b"],
-        "2": [r"\b2\s*br\b", r"\b2\s*bed\b", r"\btwo\b"],
-        "3": [r"\b3\s*br\b", r"\b3\s*bed\b", r"\bthree\b"],
-        "4": [r"\b4\s*br\b", r"\b4\s*bed\b", r"\bfour\b"],
+    bedroom_map = {
+        "1": ["1", "one"],
+        "2": ["2", "two"],
+        "3": ["3", "three"],
+        "4": ["4", "four"],
+        "5": ["5", "five"],
     }
 
-    for b, pats in patterns.items():
-        for p in pats:
-            if re.search(p, msg):
-                return b
+    for br, tokens in bedroom_map.items():
+        for t in tokens:
+            patterns = [
+                rf"\b{t}\s*br\b",
+                rf"\b{t}br\b",
+                rf"\b{t}\s*b/r\b",
+                rf"\b{t}b/r\b",
+                rf"\b{t}\s*bed\b",
+                rf"\b{t}bed\b",
+                rf"\b{t}\s*bedroom\b",
+                rf"\b{t}\s*bed\s*room\b",
+            ]
+            for p in patterns:
+                if re.search(p, msg):
+                    return br
+
     return None
 
 # ================= ROI FETCH =================
@@ -91,6 +105,7 @@ def get_roi_rows(building_ids, bedroom):
 async def whatsauto(request: Request):
     form = await request.form()
     message = (form.get("message") or "").strip()
+
     if not message:
         return reply("")
 
@@ -137,7 +152,7 @@ async def whatsauto(request: Request):
         if len(matched_ids) == 1:
             building_id = list(matched_ids)[0]
 
-            # Default bedroom → 1BR
+            # Default → 1BR if bedroom missing
             if not bedroom:
                 bedroom = "1"
 
@@ -158,8 +173,8 @@ async def whatsauto(request: Request):
                     f"Median rent {row['Median_rent']}.\n\n"
                     "Since you didn’t specify the number of bedrooms, I’ve provided the "
                     "1-bedroom ROI report along with the building profile so you can "
-                    "explore all available options.\n"
-                    "Just reply with a reference number to open any report."
+                    "navigate this building and generate any available report.\n"
+                    "Just send back the corresponding reference number."
                 )
 
                 return reply(text + "\n\n" + row["report"] + "\n\n" + menu)
