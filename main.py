@@ -33,35 +33,10 @@ def parse_percent(val):
     except:
         return None
 
-# ================= PRELOAD KEYWORDS (LAYER 0) =================
-KEYWORD_ROWS = []
-for _, row in df.iterrows():
-    if not isinstance(row.get("key_word"), str):
-        continue
-
-    keywords = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
-    KEYWORD_ROWS.append({
-        "keywords": keywords,
-        "reply": row["report"],
-        "building_id": row.get("building_id"),
-        "structural_type": row.get("structural_type")
-    })
-
-# ================= AI INTENT =================
-AI_INTENT_WORDS = [
-    "compare", "vs", "versus",
-    "roi", "investment", "yield",
-    "better", "best", "good investment"
-]
-
-def is_ai_intent(msg):
-    return any(w in msg for w in AI_INTENT_WORDS)
-
 # ================= BEDROOM EXTRACTION =================
 def extract_bedroom(msg):
     msg = msg.lower()
 
-    # studio
     if re.search(r"\bstudio\b", msg):
         return "studio"
 
@@ -88,8 +63,17 @@ def extract_bedroom(msg):
             for p in patterns:
                 if re.search(p, msg):
                     return br
-
     return None
+
+# ================= AI INTENT =================
+AI_INTENT_WORDS = [
+    "compare", "vs", "versus",
+    "roi", "investment", "yield",
+    "better", "best", "good investment"
+]
+
+def is_ai_intent(msg):
+    return any(w in msg for w in AI_INTENT_WORDS)
 
 # ================= ROI FETCH =================
 def get_roi_rows(building_ids, bedroom):
@@ -99,6 +83,21 @@ def get_roi_rows(building_ids, bedroom):
         (df["Gross_roi"].notna()) &
         (df["structural_type"] == "report")
     ]
+
+# ================= PRELOAD KEYWORDS =================
+ROUTES = []
+
+for _, row in df.iterrows():
+    if not isinstance(row.get("key_word"), str):
+        continue
+
+    ROUTES.append({
+        "keywords": [normalize(k) for k in row["key_word"].split(",") if k.strip()],
+        "reply": row["report"],
+        "structural_type": row["structural_type"],
+        "building_id": row.get("building_id"),
+        "area": row.get("area")
+    })
 
 # ================= MAIN ENDPOINT =================
 @app.post("/whatsauto")
@@ -111,48 +110,42 @@ async def whatsauto(request: Request):
 
     msg = normalize(message)
 
-    # ==========================================================
-    # LAYER 2 — AI LOGIC
-    # ==========================================================
-    if is_ai_intent(msg):
+    # ==================================================
+    # 1️⃣ AMBIGUITY MENU (HIGHEST PRIORITY)
+    # ==================================================
+    for r in ROUTES:
+        if r["structural_type"] == "ambiguity_menu":
+            if any(k in msg for k in r["keywords"]):
+                return reply(r["reply"])
+
+    # ==================================================
+    # 2️⃣ PROFILE MENU (BUILDING)
+    # ==================================================
+    matched_profile = None
+    for r in ROUTES:
+        if r["structural_type"] == "profile_menu":
+            if any(k in msg for k in r["keywords"]):
+                matched_profile = r
+                break
+
+    # ==================================================
+    # 3️⃣ AREA MENU
+    # ==================================================
+    for r in ROUTES:
+        if r["structural_type"] == "area_menu":
+            if any(k in msg for k in r["keywords"]):
+                return reply(r["reply"])
+
+    # ==================================================
+    # 4️⃣ AI LOGIC (ONLY IF PROFILE IDENTIFIED)
+    # ==================================================
+    if matched_profile and is_ai_intent(msg):
+        building_id = matched_profile["building_id"]
         bedroom = extract_bedroom(msg)
 
-        matched_ids = set()
-        menu_rows = df[df["structural_type"] == "menu"]
-
-        for _, row in menu_rows.iterrows():
-            kws = [normalize(k) for k in row["key_word"].split(",") if normalize(k)]
-            if any(k in msg for k in kws):
-                matched_ids.add(row["building_id"])
-
-        # -------- COMPARISON (Layer 2.1) --------
-        if len(matched_ids) == 2 and bedroom:
-            subset = get_roi_rows(list(matched_ids), bedroom)
-            if len(subset) != 2:
-                return reply("ROI data is unavailable for this comparison.")
-
-            a, b = subset.iloc[0], subset.iloc[1]
-            roi_a, roi_b = parse_percent(a["Gross_roi"]), parse_percent(b["Gross_roi"])
-
-            if roi_a is None or roi_b is None:
-                return reply("ROI data is unavailable for this comparison.")
-
-            analysis = (
-                f"{a['building_name']} ({bedroom}BR): ROI {roi_a:.2f}%, "
-                f"Median rent {a['Median_rent']}\n"
-                f"{b['building_name']} ({bedroom}BR): ROI {roi_b:.2f}%, "
-                f"Median rent {b['Median_rent']}\n\n"
-                f"{a['building_name'] if roi_a > roi_b else b['building_name']} "
-                f"has the higher gross ROI for this bedroom type."
-            )
-
-            return reply(analysis + "\n\n" + a["report"] + "\n\n" + b["report"])
-
-        # -------- SINGLE BUILDING (Layer 2.2) --------
-        if len(matched_ids) == 1:
-            building_id = list(matched_ids)[0]
-
-            # Default → 1BR if bedroom missing
+        # ---------- SINGLE BUILDING ----------
+        if building_id:
+            # default bedroom → 1
             if not bedroom:
                 bedroom = "1"
 
@@ -161,63 +154,53 @@ async def whatsauto(request: Request):
                     return reply("ROI data is unavailable for this building.")
 
                 row = subset.iloc[0]
-                roi = parse_percent(row["Gross_roi"])
-
-                menu = df[
-                    (df["building_id"] == building_id) &
-                    (df["structural_type"] == "menu")
-                ].iloc[0]["report"]
 
                 text = (
-                    f"{row['building_name']} (1BR): Gross ROI {roi:.2f}%, "
+                    f"{row['building_name']} (1BR): Gross ROI "
+                    f"{parse_percent(row['Gross_roi']):.2f}%, "
                     f"Median rent {row['Median_rent']}.\n\n"
-                    "Since you didn’t specify the number of bedrooms, I’ve provided the "
-                    "1-bedroom ROI report along with the building profile so you can "
-                    "navigate this building and generate any available report.\n"
+                    "Since you didn’t specify the number of bedrooms, I’ve provided "
+                    "the 1-bedroom ROI report along with the building profile so you "
+                    "can navigate this building and generate any available report.\n"
                     "Just send back the corresponding reference number."
                 )
 
-                return reply(text + "\n\n" + row["report"] + "\n\n" + menu)
+                return reply(text + "\n\n" + row["report"] + "\n\n" + matched_profile["reply"])
 
             subset = get_roi_rows([building_id], bedroom)
             if len(subset) == 0:
                 return reply("ROI data is unavailable for this bedroom type.")
 
             row = subset.iloc[0]
-            roi = parse_percent(row["Gross_roi"])
-
             return reply(
-                f"{row['building_name']} ({bedroom}BR): Gross ROI {roi:.2f}%, "
+                f"{row['building_name']} ({bedroom}BR): Gross ROI "
+                f"{parse_percent(row['Gross_roi']):.2f}%, "
                 f"Median rent {row['Median_rent']}.\n\n"
                 + row["report"]
             )
 
-        return reply(
-            "To analyze investment or ROI, please specify a building name.\n\n"
-            "Example:\nIs Burj Crown a good investment?"
-        )
+    # ==================================================
+    # 5️⃣ FALLBACK TO PROFILE MENU
+    # ==================================================
+    if matched_profile:
+        return reply(matched_profile["reply"])
 
-    # ==========================================================
-    # LAYER 0 — ORIGINAL DATABOT
-    # ==========================================================
+    # ==================================================
+    # 6️⃣ REFERENCE NUMBER (GLOBAL)
+    # ==================================================
     ref = re.search(r"\b\d{7}\b", msg)
     if ref:
-        for r in KEYWORD_ROWS:
+        for r in ROUTES:
             if ref.group() in r["keywords"]:
                 return reply(r["reply"])
 
-    for r in KEYWORD_ROWS:
-        for kw in r["keywords"]:
-            if kw in msg:
-                return reply(r["reply"])
-
-    # ==========================================================
-    # FALLBACK
-    # ==========================================================
+    # ==================================================
+    # 7️⃣ FALLBACK
+    # ==================================================
     return reply(
         "I didn’t find a specific building or reference number.\n\n"
         "You can try:\n"
         "- sending a building name\n"
         "- sending a reference number\n"
-        "- asking an investment or comparison question"
+        "- asking an investment question"
     )
