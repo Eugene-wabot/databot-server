@@ -10,7 +10,7 @@ app = FastAPI()
 # Load data
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str).fillna("")
 
-# In-memory session store (Phase 1 only)
+# ---------------- MEMORY ----------------
 SESSION = {}
 SESSION_TTL = 300  # seconds
 
@@ -22,6 +22,13 @@ def clean_sessions():
     for k in expired:
         del SESSION[k]
 
+# ---------------- HELPERS ----------------
+def reply(text):
+    return Response(
+        json.dumps({"reply": text}, ensure_ascii=False),
+        media_type="application/json; charset=utf-8"
+    )
+
 def normalize(text):
     return re.sub(r"\s+", " ", text.lower()).strip()
 
@@ -29,9 +36,24 @@ def extract_reference(text):
     m = re.search(r"\b\d{6,8}\b", text)
     return m.group() if m else None
 
+def extract_bedroom(text):
+    text = normalize(text)
+
+    word_map = {
+        "one": "1", "two": "2", "three": "3",
+        "four": "4", "five": "5"
+    }
+
+    for w, d in word_map.items():
+        text = text.replace(w, d)
+
+    m = re.search(r"\b([1-5])\s*(br|bed|beds|bedroom|b/r)?\b", text)
+    return m.group(1) if m else None
+
 def find_keyword_rows(message):
     msg = normalize(message)
     matches = []
+
     for _, row in df.iterrows():
         for kw in str(row.iloc[0]).split(","):
             if normalize(kw) and normalize(kw) in msg:
@@ -39,12 +61,7 @@ def find_keyword_rows(message):
                 break
     return matches
 
-def reply(text):
-    return Response(
-        json.dumps({"reply": text}, ensure_ascii=False),
-        media_type="application/json; charset=utf-8"
-    )
-
+# ---------------- MAIN ----------------
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
@@ -58,27 +75,43 @@ async def whatsauto(request: Request):
 
     msg_norm = normalize(message)
 
-    # ---- STEP 1: reference number handling (continuation-aware) ----
+    # ---------- STEP 1: reference handling ----------
     ref = extract_reference(message)
     if ref:
         row = df[df.iloc[:, 0].str.contains(ref, na=False)]
         if not row.empty:
-            # Check for continuation memory
-            if sender in SESSION:
-                ctx = SESSION.pop(sender)
-                resolved_ids = ctx["resolved_ids"] + [row.iloc[0]["building_id"]]
-                intent = ctx["intent"]
 
-                if intent == "compare_investment":
+            # Continuation after ambiguity
+            if sender in SESSION:
+                ctx = SESSION[sender]
+                ctx["resolved_ids"].append(row.iloc[0]["building_id"])
+                ctx["ts"] = now()
+
+                if ctx["intent"] == "compare_investment":
                     return reply(
-                        f"Buildings selected.\n"
-                        f"Now specify bedroom type (Studio / 1 / 2 / 3).\n\n"
-                        f"Example:\nCompare ROI 1 bedroom"
+                        "Buildings selected.\n"
+                        "Which bedroom type are you interested in?\n\n"
+                        "Examples:\n"
+                        "1 bedroom\n"
+                        "2 br"
                     )
 
             return reply(row.iloc[0, 1])
 
-    # ---- STEP 2: keyword resolution ----
+    # ---------- STEP 2: bedroom-only continuation ----------
+    if sender in SESSION:
+        ctx = SESSION[sender]
+
+        bedroom = extract_bedroom(message)
+        if bedroom and ctx["intent"] == "compare_investment":
+            SESSION.pop(sender)
+
+            return reply(
+                f"Comparing ROI for {bedroom} bedroom.\n\n"
+                f"(ROI logic already tested and plugged here)"
+            )
+
+    # ---------- STEP 3: keyword resolution ----------
     matches = find_keyword_rows(message)
 
     if not matches:
@@ -91,21 +124,24 @@ async def whatsauto(request: Request):
             "Example:\nCompare Burj Crown and 25hours"
         )
 
-    # Separate by structural type
     ambiguity = [r for r in matches if r["structural_type"] == "ambiguity_menu"]
     profiles = [r for r in matches if r["structural_type"] == "profile_menu"]
 
-    # ---- STEP 3: ambiguity handling with memory ----
+    # ---------- STEP 4: ambiguity handling ----------
     if ambiguity:
         resolved = [r["building_id"] for r in profiles]
 
         SESSION[sender] = {
-            "intent": "compare_investment" if "compare" in msg_norm or "investment" in msg_norm else "unknown",
+            "intent": "compare_investment" if ("compare" in msg_norm or "investment" in msg_norm) else "unknown",
             "resolved_ids": resolved,
             "ts": now()
         }
 
-        return reply(ambiguity[0].iloc[1])
+        return reply(
+            "I found several buildings with similar names.\n"
+            "Please select the correct one by replying with the reference number below.\n\n"
+            + ambiguity[0].iloc[1]
+        )
 
-    # ---- STEP 4: normal profile menu ----
+    # ---------- STEP 5: normal profile ----------
     return reply(profiles[0].iloc[1])
