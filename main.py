@@ -7,15 +7,11 @@ import re
 
 app = FastAPI()
 
-# ================= LOAD DATA =================
-df = pd.read_excel(
-    "Autoreplies_app_metadata_sample.xlsx",
-    dtype=str
-).fillna("")
+df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str).fillna("")
 
 # ================= MEMORY =================
 SESSION = {}
-SESSION_TTL = 300  # seconds
+SESSION_TTL = 300
 
 def now():
     return int(time.time())
@@ -85,32 +81,28 @@ async def whatsauto(request: Request):
             if sender in SESSION:
                 ctx = SESSION[sender]
 
-                # resolve exactly one ambiguity
-                for amb in ctx["pending_ambiguities"]:
-                    if amb["building_id"] == selected_building_id and not amb["resolved"]:
-                        amb["resolved"] = True
-                        ctx["resolved_ids"].append(selected_building_id)
-                        ctx["ts"] = now()
-                        break
+                # REMOVE resolved ambiguity
+                ctx["pending_ambiguities"] = [
+                    amb for amb in ctx["pending_ambiguities"]
+                    if amb["building_id"] != selected_building_id
+                ]
 
-                # ask next unresolved ambiguity (if any)
-                for amb in ctx["pending_ambiguities"]:
-                    if not amb["resolved"]:
-                        return reply(
-                            "Please select the next building by replying with the reference number below:\n\n"
-                            + amb["menu_text"]
-                        )
+                ctx["resolved_ids"].append(selected_building_id)
+                ctx["ts"] = now()
 
-                # all ambiguities resolved
+                if ctx["pending_ambiguities"]:
+                    next_amb = ctx["pending_ambiguities"][0]
+                    return reply(
+                        "Please select the next building by replying with the reference number below:\n\n"
+                        + next_amb["menu_text"]
+                    )
+
                 return reply(
                     "Buildings selected.\n"
                     "Which bedroom type are you interested in?\n\n"
-                    "Examples:\n"
-                    "1 bedroom\n"
-                    "2 br"
+                    "Examples:\n1 bedroom\n2 br"
                 )
 
-            # normal reference lookup
             return reply(row.iloc[0, 1])
 
     # ---------- STEP 2: bedroom continuation ----------
@@ -118,7 +110,7 @@ async def whatsauto(request: Request):
         ctx = SESSION[sender]
         bedroom = extract_bedroom(message)
 
-        if bedroom and all(a["resolved"] for a in ctx["pending_ambiguities"]):
+        if bedroom and not ctx["pending_ambiguities"]:
             SESSION.pop(sender)
             return reply(
                 f"Comparing ROI for {bedroom} bedroom.\n\n"
@@ -135,8 +127,7 @@ async def whatsauto(request: Request):
             "- sending a building name\n"
             "- sending a reference number\n"
             "- asking to compare two buildings\n\n"
-            "Example:\n"
-            "Compare Burj Crown and 25hours"
+            "Example:\nCompare Burj Crown and 25hours"
         )
 
     # ---------- STEP 4: group by building_id ----------
@@ -146,38 +137,23 @@ async def whatsauto(request: Request):
         buildings.setdefault(bid, []).append(r)
 
     resolved_ids = []
-    pending_ambiguities_dict = {}  # KEY FIX: dict, not list
+    pending_ambiguities = []
 
     for bid, rows in buildings.items():
-        amb_row = next(
-            (r for r in rows if r["structural_type"] == "ambiguity_menu"),
-            None
-        )
-        prof_row = next(
-            (r for r in rows if r["structural_type"] == "profile_menu"),
-            None
-        )
+        amb_row = next((r for r in rows if r["structural_type"] == "ambiguity_menu"), None)
+        prof_row = next((r for r in rows if r["structural_type"] == "profile_menu"), None)
 
         if amb_row is not None:
-            # ensure ONE ambiguity per building_id
-            pending_ambiguities_dict[bid] = {
+            pending_ambiguities.append({
                 "building_id": bid,
-                "menu_text": amb_row.iloc[1],
-                "resolved": False
-            }
+                "menu_text": amb_row.iloc[1]
+            })
         elif prof_row is not None:
             resolved_ids.append(bid)
 
-    pending_ambiguities = list(pending_ambiguities_dict.values())
-
-    # ---------- STEP 5: start ambiguity flow ----------
     if pending_ambiguities:
         SESSION[sender] = {
-            "intent": (
-                "compare_investment"
-                if ("compare" in msg_norm or "investment" in msg_norm)
-                else "unknown"
-            ),
+            "intent": "compare_investment" if ("compare" in msg_norm or "investment" in msg_norm) else "unknown",
             "resolved_ids": resolved_ids,
             "pending_ambiguities": pending_ambiguities,
             "ts": now()
@@ -190,5 +166,5 @@ async def whatsauto(request: Request):
             + first["menu_text"]
         )
 
-    # ---------- STEP 6: normal profile ----------
+    # ---------- STEP 5: normal profile ----------
     return reply(matches[0].iloc[1])
