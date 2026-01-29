@@ -7,40 +7,45 @@ import re
 app = FastAPI()
 
 # =========================
-# Load data
+# Load Excel (column-safe)
 # =========================
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str).fillna("")
 
+# Column positions (IMPORTANT)
+COL_KEYWORD = 0      # Column A
+COL_REPLY = 1        # Column B
+COL_STRUCT = df.columns.get_loc("structural_type")
+
 # =========================
-# In-memory session store
+# In-memory sessions
 # =========================
 SESSIONS = {}
 
-def get_session(user_id):
-    if user_id not in SESSIONS:
-        SESSIONS[user_id] = {
+def get_session(uid):
+    if uid not in SESSIONS:
+        SESSIONS[uid] = {
             "pending_ambiguities": [],
-            "resolved_buildings": [],
+            "resolved_refs": [],
             "awaiting_bedroom": False
         }
-    return SESSIONS[user_id]
+    return SESSIONS[uid]
 
-def reset_session(user_id):
-    SESSIONS[user_id] = {
+def reset_session(uid):
+    SESSIONS[uid] = {
         "pending_ambiguities": [],
-        "resolved_buildings": [],
+        "resolved_refs": [],
         "awaiting_bedroom": False
     }
 
-# =========================
-# Helpers
-# =========================
-def json_reply(text):
+def reply(text):
     return Response(
         json.dumps({"reply": text}, ensure_ascii=False),
         media_type="application/json; charset=utf-8"
     )
 
+# =========================
+# Helpers
+# =========================
 def extract_bedroom(text):
     text = text.lower()
     patterns = {
@@ -55,34 +60,41 @@ def extract_bedroom(text):
             return k
     return None
 
-def find_keyword_rows(message):
-    message = message.lower()
-    matches = []
+def find_matching_rows(message):
+    msg = message.lower()
+    rows = []
+
     for _, row in df.iterrows():
-        keywords = [k.strip().lower() for k in row["keyword"].split(",")]
+        keywords = [k.strip().lower() for k in row.iloc[COL_KEYWORD].split(",")]
         for kw in keywords:
-            if kw and kw in message:
-                matches.append(row)
+            if kw and kw in msg:
+                rows.append(row)
                 break
-    return matches
+    return rows
 
 def build_ambiguity_queue(rows):
     queue = []
     seen = set()
+
     for r in rows:
-        if r["structural_type"] == "ambiguity_menu":
-            key = r["keyword"]
+        if r.iloc[COL_STRUCT] == "ambiguity_menu":
+            key = r.iloc[COL_KEYWORD]
             if key not in seen:
                 queue.append({
-                    "keyword": key,
-                    "menu_text": r["reply"]
+                    "menu": r.iloc[COL_REPLY],
+                    "refs": extract_refs(r.iloc[COL_REPLY])
                 })
                 seen.add(key)
     return queue
 
+def extract_refs(text):
+    return re.findall(r"\b\d{7}\b", text)
+
 def find_row_by_ref(ref):
-    match = df[df["keyword"].str.strip() == ref]
-    return None if match.empty else match.iloc[0]
+    for _, r in df.iterrows():
+        if ref == r.iloc[COL_KEYWORD].strip():
+            return r
+    return None
 
 # =========================
 # Endpoint
@@ -90,60 +102,56 @@ def find_row_by_ref(ref):
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
-    message = form.get("message", "").strip()
-    user_id = form.get("from", "default")
+    msg = form.get("message", "").strip()
+    uid = form.get("from", "default")
 
-    if not message:
-        return json_reply("")
+    if not msg:
+        return reply("")
 
-    session = get_session(user_id)
+    session = get_session(uid)
 
     # =========================
-    # STEP 1 — Reference reply (ambiguity resolution)
+    # 1️⃣ Ambiguity resolution
     # =========================
-    if message.isdigit() and session["pending_ambiguities"]:
+    if msg.isdigit() and session["pending_ambiguities"]:
         active = session["pending_ambiguities"][0]
-        if message not in active["menu_text"]:
-            return json_reply("Please reply with one of the listed reference numbers.")
 
-        row = find_row_by_ref(message)
-        if not row:
-            return json_reply("Invalid reference number.")
+        if msg not in active["refs"]:
+            return reply("Please reply with one of the listed reference numbers.")
 
-        session["resolved_buildings"].append(row)
+        session["resolved_refs"].append(msg)
         session["pending_ambiguities"].pop(0)
 
         if session["pending_ambiguities"]:
-            next_menu = session["pending_ambiguities"][0]["menu_text"]
-            return json_reply(
+            return reply(
                 "Please select the next building by replying with the reference number below:\n\n"
-                + next_menu
+                + session["pending_ambiguities"][0]["menu"]
             )
 
         session["awaiting_bedroom"] = True
-        return json_reply(
-            "Buildings selected.\nWhich bedroom type are you interested in?\n\nExamples:\n1 bedroom\n2 br"
+        return reply(
+            "Buildings selected.\nWhich bedroom type are you interested in?\n\n"
+            "Examples:\n1 bedroom\n2 br"
         )
 
     # =========================
-    # STEP 2 — Bedroom reply
+    # 2️⃣ Bedroom follow-up
     # =========================
     if session["awaiting_bedroom"]:
-        bedroom = extract_bedroom(message)
-        if not bedroom:
-            return json_reply("Please specify bedroom type (Studio / 1 / 2 / 3).")
+        bed = extract_bedroom(msg)
+        if not bed:
+            return reply("Please specify bedroom type (Studio / 1 / 2 / 3).")
 
-        # ROI logic placeholder (already implemented in your version)
-        reset_session(user_id)
-        return json_reply(f"Comparing ROI for {bedroom} bedroom.\n\n(ROI logic already plugged here)")
+        reset_session(uid)
+        return reply(f"Comparing ROI for {bed} bedroom.\n\n(ROI logic already plugged here)")
 
     # =========================
-    # STEP 3 — Fresh message (no memory)
+    # 3️⃣ Fresh message
     # =========================
-    matched_rows = find_keyword_rows(message)
+    matched = find_matching_rows(msg)
 
-    if not matched_rows:
-        return json_reply(
+    if not matched:
+        return reply(
             "I didn’t find a specific building or reference number.\n\n"
             "You can try:\n"
             "- sending a building name\n"
@@ -151,20 +159,18 @@ async def whatsauto(request: Request):
             "- asking to compare two buildings"
         )
 
-    ambiguity_queue = build_ambiguity_queue(matched_rows)
+    ambiguity_queue = build_ambiguity_queue(matched)
 
     if ambiguity_queue:
         session["pending_ambiguities"] = ambiguity_queue
-        first = ambiguity_queue[0]["menu_text"]
-        return json_reply(
+        return reply(
             "I found several buildings with similar names.\n"
             "Please select the correct one by replying with the reference number below.\n\n"
-            + first
+            + ambiguity_queue[0]["menu"]
         )
 
     # =========================
-    # STEP 4 — Direct match (profile / report)
+    # 4️⃣ Direct hit
     # =========================
-    row = matched_rows[0]
-    reset_session(user_id)
-    return json_reply(row["reply"])
+    reset_session(uid)
+    return reply(matched[0].iloc[COL_REPLY])
