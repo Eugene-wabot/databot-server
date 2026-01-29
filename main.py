@@ -7,11 +7,15 @@ import re
 
 app = FastAPI()
 
-df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str).fillna("")
+# ================= LOAD DATA =================
+df = pd.read_excel(
+    "Autoreplies_app_metadata_sample.xlsx",
+    dtype=str
+).fillna("")
 
-# ---------------- MEMORY ----------------
+# ================= MEMORY =================
 SESSION = {}
-SESSION_TTL = 300
+SESSION_TTL = 300  # seconds
 
 def now():
     return int(time.time())
@@ -21,7 +25,7 @@ def clean_sessions():
         if now() - SESSION[k]["ts"] > SESSION_TTL:
             del SESSION[k]
 
-# ---------------- HELPERS ----------------
+# ================= HELPERS =================
 def reply(text):
     return Response(
         json.dumps({"reply": text}, ensure_ascii=False),
@@ -57,7 +61,7 @@ def find_keyword_rows(message):
                 break
     return rows
 
-# ---------------- MAIN ----------------
+# ================= MAIN =================
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
@@ -81,6 +85,7 @@ async def whatsauto(request: Request):
             if sender in SESSION:
                 ctx = SESSION[sender]
 
+                # resolve exactly one ambiguity
                 for amb in ctx["pending_ambiguities"]:
                     if amb["building_id"] == selected_building_id and not amb["resolved"]:
                         amb["resolved"] = True
@@ -88,6 +93,7 @@ async def whatsauto(request: Request):
                         ctx["ts"] = now()
                         break
 
+                # ask next unresolved ambiguity (if any)
                 for amb in ctx["pending_ambiguities"]:
                     if not amb["resolved"]:
                         return reply(
@@ -95,12 +101,16 @@ async def whatsauto(request: Request):
                             + amb["menu_text"]
                         )
 
+                # all ambiguities resolved
                 return reply(
                     "Buildings selected.\n"
                     "Which bedroom type are you interested in?\n\n"
-                    "Examples:\n1 bedroom\n2 br"
+                    "Examples:\n"
+                    "1 bedroom\n"
+                    "2 br"
                 )
 
+            # normal reference lookup
             return reply(row.iloc[0, 1])
 
     # ---------- STEP 2: bedroom continuation ----------
@@ -125,34 +135,49 @@ async def whatsauto(request: Request):
             "- sending a building name\n"
             "- sending a reference number\n"
             "- asking to compare two buildings\n\n"
-            "Example:\nCompare Burj Crown and 25hours"
+            "Example:\n"
+            "Compare Burj Crown and 25hours"
         )
 
-    # group matches by building_id
+    # ---------- STEP 4: group by building_id ----------
     buildings = {}
     for r in matches:
         bid = r["building_id"]
         buildings.setdefault(bid, []).append(r)
 
     resolved_ids = []
-    pending_ambiguities = []
+    pending_ambiguities_dict = {}  # KEY FIX: dict, not list
 
     for bid, rows in buildings.items():
-        amb_row = next((r for r in rows if r["structural_type"] == "ambiguity_menu"), None)
-        prof_row = next((r for r in rows if r["structural_type"] == "profile_menu"), None)
+        amb_row = next(
+            (r for r in rows if r["structural_type"] == "ambiguity_menu"),
+            None
+        )
+        prof_row = next(
+            (r for r in rows if r["structural_type"] == "profile_menu"),
+            None
+        )
 
         if amb_row is not None:
-            pending_ambiguities.append({
+            # ensure ONE ambiguity per building_id
+            pending_ambiguities_dict[bid] = {
                 "building_id": bid,
                 "menu_text": amb_row.iloc[1],
                 "resolved": False
-            })
+            }
         elif prof_row is not None:
             resolved_ids.append(bid)
 
+    pending_ambiguities = list(pending_ambiguities_dict.values())
+
+    # ---------- STEP 5: start ambiguity flow ----------
     if pending_ambiguities:
         SESSION[sender] = {
-            "intent": "compare_investment" if ("compare" in msg_norm or "investment" in msg_norm) else "unknown",
+            "intent": (
+                "compare_investment"
+                if ("compare" in msg_norm or "investment" in msg_norm)
+                else "unknown"
+            ),
             "resolved_ids": resolved_ids,
             "pending_ambiguities": pending_ambiguities,
             "ts": now()
@@ -165,5 +190,5 @@ async def whatsauto(request: Request):
             + first["menu_text"]
         )
 
-    # ---------- STEP 4: normal profile ----------
+    # ---------- STEP 6: normal profile ----------
     return reply(matches[0].iloc[1])
