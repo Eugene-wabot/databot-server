@@ -2,169 +2,169 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 import pandas as pd
 import json
-import time
 import re
 
 app = FastAPI()
 
+# =========================
+# Load data
+# =========================
 df = pd.read_excel("Autoreplies_app_metadata_sample.xlsx", dtype=str).fillna("")
 
-# ================= MEMORY =================
-SESSION = {}
-SESSION_TTL = 300
+# =========================
+# In-memory session store
+# =========================
+SESSIONS = {}
 
-def now():
-    return int(time.time())
+def get_session(user_id):
+    if user_id not in SESSIONS:
+        SESSIONS[user_id] = {
+            "pending_ambiguities": [],
+            "resolved_buildings": [],
+            "awaiting_bedroom": False
+        }
+    return SESSIONS[user_id]
 
-def clean_sessions():
-    for k in list(SESSION.keys()):
-        if now() - SESSION[k]["ts"] > SESSION_TTL:
-            del SESSION[k]
+def reset_session(user_id):
+    SESSIONS[user_id] = {
+        "pending_ambiguities": [],
+        "resolved_buildings": [],
+        "awaiting_bedroom": False
+    }
 
-# ================= HELPERS =================
-def reply(text):
+# =========================
+# Helpers
+# =========================
+def json_reply(text):
     return Response(
         json.dumps({"reply": text}, ensure_ascii=False),
         media_type="application/json; charset=utf-8"
     )
 
-def normalize(text):
-    return re.sub(r"\s+", " ", text.lower()).strip()
-
-def extract_reference(text):
-    m = re.search(r"\b\d{6,8}\b", text)
-    return m.group() if m else None
-
 def extract_bedroom(text):
-    text = normalize(text)
-    text = (
-        text.replace("one", "1")
-            .replace("two", "2")
-            .replace("three", "3")
-            .replace("four", "4")
-            .replace("five", "5")
-    )
-    m = re.search(r"\b([1-5])\s*(br|bed|beds|bedroom|b/r)?\b", text)
-    return m.group(1) if m else None
+    text = text.lower()
+    patterns = {
+        "studio": r"\bstudio\b",
+        "1": r"\b1\s*(br|bed|bedroom|b/r)?\b",
+        "2": r"\b2\s*(br|bed|bedroom|b/r)?\b",
+        "3": r"\b3\s*(br|bed|bedroom|b/r)?\b",
+        "4": r"\b4\s*(br|bed|bedroom|b/r)?\b",
+    }
+    for k, p in patterns.items():
+        if re.search(p, text):
+            return k
+    return None
 
 def find_keyword_rows(message):
-    msg = normalize(message)
-    rows = []
-    for _, r in df.iterrows():
-        for kw in str(r.iloc[0]).split(","):
-            if normalize(kw) and normalize(kw) in msg:
-                rows.append(r)
+    message = message.lower()
+    matches = []
+    for _, row in df.iterrows():
+        keywords = [k.strip().lower() for k in row["keyword"].split(",")]
+        for kw in keywords:
+            if kw and kw in message:
+                matches.append(row)
                 break
-    return rows
+    return matches
 
-# ================= MAIN =================
+def build_ambiguity_queue(rows):
+    queue = []
+    seen = set()
+    for r in rows:
+        if r["structural_type"] == "ambiguity_menu":
+            key = r["keyword"]
+            if key not in seen:
+                queue.append({
+                    "keyword": key,
+                    "menu_text": r["reply"]
+                })
+                seen.add(key)
+    return queue
+
+def find_row_by_ref(ref):
+    match = df[df["keyword"].str.strip() == ref]
+    return None if match.empty else match.iloc[0]
+
+# =========================
+# Endpoint
+# =========================
 @app.post("/whatsauto")
 async def whatsauto(request: Request):
     form = await request.form()
     message = form.get("message", "").strip()
-    sender = form.get("sender", "default")
-
-    clean_sessions()
+    user_id = form.get("from", "default")
 
     if not message:
-        return reply("")
+        return json_reply("")
 
-    msg_norm = normalize(message)
+    session = get_session(user_id)
 
-    # ---------- STEP 1: reference continuation ----------
-    ref = extract_reference(message)
-    if ref:
-        row = df[df.iloc[:, 0].str.contains(ref, na=False)]
-        if not row.empty:
-            selected_building_id = row.iloc[0]["building_id"]
+    # =========================
+    # STEP 1 — Reference reply (ambiguity resolution)
+    # =========================
+    if message.isdigit() and session["pending_ambiguities"]:
+        active = session["pending_ambiguities"][0]
+        if message not in active["menu_text"]:
+            return json_reply("Please reply with one of the listed reference numbers.")
 
-            if sender in SESSION:
-                ctx = SESSION[sender]
+        row = find_row_by_ref(message)
+        if not row:
+            return json_reply("Invalid reference number.")
 
-                # REMOVE resolved ambiguity
-                ctx["pending_ambiguities"] = [
-                    amb for amb in ctx["pending_ambiguities"]
-                    if amb["building_id"] != selected_building_id
-                ]
+        session["resolved_buildings"].append(row)
+        session["pending_ambiguities"].pop(0)
 
-                ctx["resolved_ids"].append(selected_building_id)
-                ctx["ts"] = now()
-
-                if ctx["pending_ambiguities"]:
-                    next_amb = ctx["pending_ambiguities"][0]
-                    return reply(
-                        "Please select the next building by replying with the reference number below:\n\n"
-                        + next_amb["menu_text"]
-                    )
-
-                return reply(
-                    "Buildings selected.\n"
-                    "Which bedroom type are you interested in?\n\n"
-                    "Examples:\n1 bedroom\n2 br"
-                )
-
-            return reply(row.iloc[0, 1])
-
-    # ---------- STEP 2: bedroom continuation ----------
-    if sender in SESSION:
-        ctx = SESSION[sender]
-        bedroom = extract_bedroom(message)
-
-        if bedroom and not ctx["pending_ambiguities"]:
-            SESSION.pop(sender)
-            return reply(
-                f"Comparing ROI for {bedroom} bedroom.\n\n"
-                "(ROI logic already plugged here)"
+        if session["pending_ambiguities"]:
+            next_menu = session["pending_ambiguities"][0]["menu_text"]
+            return json_reply(
+                "Please select the next building by replying with the reference number below:\n\n"
+                + next_menu
             )
 
-    # ---------- STEP 3: keyword resolution ----------
-    matches = find_keyword_rows(message)
+        session["awaiting_bedroom"] = True
+        return json_reply(
+            "Buildings selected.\nWhich bedroom type are you interested in?\n\nExamples:\n1 bedroom\n2 br"
+        )
 
-    if not matches:
-        return reply(
+    # =========================
+    # STEP 2 — Bedroom reply
+    # =========================
+    if session["awaiting_bedroom"]:
+        bedroom = extract_bedroom(message)
+        if not bedroom:
+            return json_reply("Please specify bedroom type (Studio / 1 / 2 / 3).")
+
+        # ROI logic placeholder (already implemented in your version)
+        reset_session(user_id)
+        return json_reply(f"Comparing ROI for {bedroom} bedroom.\n\n(ROI logic already plugged here)")
+
+    # =========================
+    # STEP 3 — Fresh message (no memory)
+    # =========================
+    matched_rows = find_keyword_rows(message)
+
+    if not matched_rows:
+        return json_reply(
             "I didn’t find a specific building or reference number.\n\n"
             "You can try:\n"
             "- sending a building name\n"
             "- sending a reference number\n"
-            "- asking to compare two buildings\n\n"
-            "Example:\nCompare Burj Crown and 25hours"
+            "- asking to compare two buildings"
         )
 
-    # ---------- STEP 4: group by building_id ----------
-    buildings = {}
-    for r in matches:
-        bid = r["building_id"]
-        buildings.setdefault(bid, []).append(r)
+    ambiguity_queue = build_ambiguity_queue(matched_rows)
 
-    resolved_ids = []
-    pending_ambiguities = []
-
-    for bid, rows in buildings.items():
-        amb_row = next((r for r in rows if r["structural_type"] == "ambiguity_menu"), None)
-        prof_row = next((r for r in rows if r["structural_type"] == "profile_menu"), None)
-
-        if amb_row is not None:
-            pending_ambiguities.append({
-                "building_id": bid,
-                "menu_text": amb_row.iloc[1]
-            })
-        elif prof_row is not None:
-            resolved_ids.append(bid)
-
-    if pending_ambiguities:
-        SESSION[sender] = {
-            "intent": "compare_investment" if ("compare" in msg_norm or "investment" in msg_norm) else "unknown",
-            "resolved_ids": resolved_ids,
-            "pending_ambiguities": pending_ambiguities,
-            "ts": now()
-        }
-
-        first = pending_ambiguities[0]
-        return reply(
+    if ambiguity_queue:
+        session["pending_ambiguities"] = ambiguity_queue
+        first = ambiguity_queue[0]["menu_text"]
+        return json_reply(
             "I found several buildings with similar names.\n"
             "Please select the correct one by replying with the reference number below.\n\n"
-            + first["menu_text"]
+            + first
         )
 
-    # ---------- STEP 5: normal profile ----------
-    return reply(matches[0].iloc[1])
+    # =========================
+    # STEP 4 — Direct match (profile / report)
+    # =========================
+    row = matched_rows[0]
+    reset_session(user_id)
+    return json_reply(row["reply"])
