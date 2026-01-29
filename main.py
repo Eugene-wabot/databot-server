@@ -37,8 +37,13 @@ def extract_reference(text):
 
 def extract_bedroom(text):
     text = normalize(text)
-    text = text.replace("one", "1").replace("two", "2").replace("three", "3") \
-               .replace("four", "4").replace("five", "5")
+    text = (
+        text.replace("one", "1")
+            .replace("two", "2")
+            .replace("three", "3")
+            .replace("four", "4")
+            .replace("five", "5")
+    )
     m = re.search(r"\b([1-5])\s*(br|bed|beds|bedroom|b/r)?\b", text)
     return m.group(1) if m else None
 
@@ -76,15 +81,13 @@ async def whatsauto(request: Request):
             if sender in SESSION:
                 ctx = SESSION[sender]
 
-                # mark ambiguity resolved
                 for amb in ctx["pending_ambiguities"]:
-                    if amb["building_id"] == selected_building_id:
+                    if amb["building_id"] == selected_building_id and not amb["resolved"]:
                         amb["resolved"] = True
                         ctx["resolved_ids"].append(selected_building_id)
                         ctx["ts"] = now()
                         break
 
-                # find next unresolved ambiguity
                 for amb in ctx["pending_ambiguities"]:
                     if not amb["resolved"]:
                         return reply(
@@ -92,7 +95,6 @@ async def whatsauto(request: Request):
                             + amb["menu_text"]
                         )
 
-                # all ambiguities resolved
                 return reply(
                     "Buildings selected.\n"
                     "Which bedroom type are you interested in?\n\n"
@@ -126,7 +128,7 @@ async def whatsauto(request: Request):
             "Example:\nCompare Burj Crown and 25hours"
         )
 
-    # group by building_id
+    # group matches by building_id
     buildings = {}
     for r in matches:
         bid = r["building_id"]
@@ -139,13 +141,13 @@ async def whatsauto(request: Request):
         amb_row = next((r for r in rows if r["structural_type"] == "ambiguity_menu"), None)
         prof_row = next((r for r in rows if r["structural_type"] == "profile_menu"), None)
 
-        if amb_row:
+        if amb_row is not None:
             pending_ambiguities.append({
                 "building_id": bid,
                 "menu_text": amb_row.iloc[1],
                 "resolved": False
             })
-        elif prof_row:
+        elif prof_row is not None:
             resolved_ids.append(bid)
 
     if pending_ambiguities:
